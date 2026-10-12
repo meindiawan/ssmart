@@ -11,7 +11,7 @@
 | LOGIN_PASSWORD_HASH — ingat tanda $ di .env harus diapit tanda kutip tunggal).
 */
 return [
-    'username'      => env('LOGIN_USERNAME', 'admin'),
-    'password_hash' => env('LOGIN_PASSWORD_HASH', '$2y$10$o0T.1/5poctyYucDsrW.3OIaV.FxnoBj8H8ItZsm9Da6xDuIDKhuO'),
+    'username'      => env('LOGIN_USERNAME', 'ssmart@gmail.com'),
+    'password_hash' => env('LOGIN_PASSWORD_HASH', '$2y$10$RgmPyTI3qS5ilYw.t5kO3uvt5h4ta7KAptC6mwHHcHykOyaT5wp/y'),
     'nama_tampil'   => 'Administrator',
 ];
