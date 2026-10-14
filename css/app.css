@@ -548,18 +548,11 @@ tfoot td:first-child { text-align: left; font-family: var(--F-b); }
 .trx-price-chip:hover { background: var(--emas); color: #fff; }
 .trx-price-chip:disabled { opacity: .4; cursor: default; background: none; border-style: dashed; }
 
-/* ── Grid Input Pembelian ala spreadsheet iPos: header biru, banyak baris
-   kosong sekaligus tersusun ke bawah siap diketik, header tetap kelihatan
-   saat scroll (sticky), baris selang-seling supaya enak dibaca ke bawah. ─ */
-.trx-grid-beli thead th {
-    background: #1d6fd1; color: #fff; position: sticky; top: 0; z-index: 2;
-    border-bottom: none; font-size: 10.5px; padding: 8px 6px;
-}
-.trx-grid-beli tbody tr:nth-child(even) { background: #eaf2fc; }
-.trx-grid-beli tbody tr:nth-child(odd)  { background: #f7fafe; }
-.trx-grid-beli tbody tr:hover { background: #d9ebff; }
-.trx-grid-beli td { border: 1px solid #cfe0f5; padding: 3px 4px; }
-.trx-grid-beli .finput, .trx-grid-beli .fselect { background: #fff; }
+/* ── Grid Input Pembelian (versi simpel): tampilan netral sama seperti
+   tabel lain — tanpa header/baris biru. Cuma kolom yang dibutuhkan. ──── */
+.trx-grid-beli th { background: var(--kertas); }
+.trx-grid-beli tbody tr:hover { background: rgba(26,92,56,.035); }
+.trx-grid-beli td { vertical-align: middle; }
 
 .pos-riwayat-note { font-size: 11.5px; color: var(--ylw); background: var(--ylw-s); border: 1px solid rgba(176,115,24,.25); padding: 6px 12px; border-radius: 8px; }
 

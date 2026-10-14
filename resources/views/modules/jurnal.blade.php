@@ -15,6 +15,7 @@
   {{-- Sub-navigasi — nav.js → wireSnav('snJurnal','jr') --}}
   <div class="subnav" id="snJurnal">
     <button class="on" data-s="umum">📝 Jurnal Umum</button>
+    <button data-s="memorial">📌 Manual &amp; Memorial</button>
     <button data-s="besar">📒 Buku Besar</button>
   </div>
 
@@ -36,12 +37,23 @@
          BM-{id}     = Barang Masuk (modul Stok)
          BK-{id}     = Barang Keluar (modul Stok)
          SO-{id}-{d} = Selisih Stok Opname
+         MTK-…/MT-{id} = Mutasi Barang antar cabang (1108/1109/2104)
+         JU-…        = Jurnal Manual     JM-… = Jurnal Memorial
 
        Klik satu baris jurnal untuk melihat semua pasangan debit/kredit
        dari referensi yang sama (lihatDetailJurnal() di jurnal.js).
   ─────────────────────────────────────────────────────────────── --}}
   <div id="jr-umum">
     <div class="loading-state"><div class="loading-spinner"></div><p>Membuat jurnal dari transaksi…</p></div>
+  </div>
+
+  {{-- ── Jurnal Manual & Memorial ────────────────────────────────
+       jurnal.js → renderJurnalMemorial()  → GET/POST/PUT/DELETE /api/jurnal-manual
+       Daftar jurnal yang diinput manual (JU-…) dan jurnal memorial (JM-…),
+       lengkap dengan Edit, Hapus & Buat Pembalik. Isinya otomatis ikut Jurnal Umum.
+  ─────────────────────────────────────────────────────────────── --}}
+  <div id="jr-memorial" style="display:none;">
+    <div class="loading-state"><div class="loading-spinner"></div><p>Memuat jurnal manual…</p></div>
   </div>
 
   {{-- ── Buku Besar per Akun ─────────────────────────────────────

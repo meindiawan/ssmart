@@ -567,10 +567,11 @@ class TransaksiController extends Controller
             'bayar'       => ['required', Rule::in(['Tunai', 'Kredit'])],
             'kode_kas'    => ['required_if:bayar,Tunai', 'nullable', 'string', 'exists:coa,kode'],
             'keterangan'  => 'nullable|string|max:255',
-            // Setiap Pembelian wajib punya supplier — dicocokkan ke Master Supplier
-            // (menu Data Master > Supplier) supaya hutang usaha & riwayat pembelian
-            // per supplier bisa direkap dengan benar di modul Kontak.
-            'supplier'    => 'required|string|exists:supplier,nama',
+            // Supplier OPSIONAL: boleh dikosongkan (mis. data Supplier belum diimpor)
+            // dan diisi belakangan lewat tombol "Isi Supplier" di Riwayat Pembelian.
+            // Kalau diisi, harus cocok dengan Master Supplier (Data Master > Supplier)
+            // supaya hutang usaha & riwayat pembelian per supplier bisa direkap di Kontak.
+            'supplier'    => 'nullable|string|exists:supplier,nama',
             'no_nota'     => 'nullable|string|max:30',
             // Akun/operator yang menginput transaksi (mis. OFFICER, ADM3, BCNA1) —
             // dipakai untuk melacak asal data pembelian. Opsional.

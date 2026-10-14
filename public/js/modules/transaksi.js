@@ -390,34 +390,23 @@ function trxGridRenderBody(jenis) {
     </td>`;
 
     if (jenis === 'beli') {
-        // Grid Input Pembelian ala iPos: HRG BELI + tiap tingkat harga jual
-        // langsung bisa diedit di sini (harga ATAU %-nya), plus DISC%/RUPIAH
-        // dan Kadaluarsa per baris — tidak perlu buka Master Barang terpisah.
-        const numCell = (id, val, step, oninput) =>
-            `<input class="finput r" type="number" step="${step}" style="width:88px;" id="${id}" value="${val}" oninput="${oninput}">`;
-        const pctCell = (id, val, oninput) =>
-            `<input class="finput r" type="number" step="0.01" style="width:56px;" id="${id}" value="${val}" oninput="${oninput}" title="Markup dari HRG BELI">`;
+        // Grid Input Pembelian (simpel): Barang · Satuan · Qty · Harga Beli · Diskon · PPN · Subtotal.
+        // Harga jual (HGA TOKO/PARTAI/CABANG), %, dan Kadaluarsa tidak lagi di sini —
+        // atur lewat Data Master > Barang / Kadaluarsa.
+        const numCell = (id, val, oninput, w = 110) =>
+            `<input class="finput r" type="number" min="0" step="1" style="width:${w}px;" id="${id}" value="${val}" oninput="${oninput}">`;
 
         tbody.innerHTML = rows.map(r => `<tr>
             ${kodeCell(r)}
             ${satuanCell(r)}
-            <td><input class="finput r" type="number" min="0.01" step="0.01" style="width:64px;" id="trxQty_${jenis}_${r.id}" value="${r.qty}"
+            <td><input class="finput r" type="number" min="0.01" step="0.01" style="width:70px;" id="trxQty_${jenis}_${r.id}" value="${r.qty}"
                 oninput="trxGridSetNumber('${jenis}',${r.id},'qty',this.value)"
-                onkeydown="if(event.key==='Enter'){event.preventDefault();trxGridAddRow('${jenis}');}"></td>
-            <td>${numCell(`trxModal_${jenis}_${r.id}`, r.modal, '1', `trxGridSetModal('${jenis}',${r.id},this.value)`)}</td>
-            <td>${numCell(`trxHj_${jenis}_${r.id}`, r.hj, '1', `trxGridSetTierHarga('${jenis}',${r.id},'hj',this.value)`)}</td>
-            <td>${pctCell(`trxPctHj_${jenis}_${r.id}`, r.pctHj, `trxGridSetTierPct('${jenis}',${r.id},'hj',this.value)`)}</td>
-            <td>${numCell(`trxHg_${jenis}_${r.id}`, r.hg, '1', `trxGridSetTierHarga('${jenis}',${r.id},'hg',this.value)`)}</td>
-            <td>${pctCell(`trxPctHg_${jenis}_${r.id}`, r.pctHg, `trxGridSetTierPct('${jenis}',${r.id},'hg',this.value)`)}</td>
-            <td>${numCell(`trxHc_${jenis}_${r.id}`, r.hc, '1', `trxGridSetTierHarga('${jenis}',${r.id},'hc',this.value)`)}</td>
-            <td>${pctCell(`trxPctHc_${jenis}_${r.id}`, r.pctHc, `trxGridSetTierPct('${jenis}',${r.id},'hc',this.value)`)}</td>
-            <td>${pctCell(`trxDiskonPct_${jenis}_${r.id}`, r.diskonPct, `trxGridSetDiskonPct('${jenis}',${r.id},this.value)`)}</td>
-            <td>${numCell(`trxDiskonRp_${jenis}_${r.id}`, r.diskon, '1', `trxGridSetDiskonRp('${jenis}',${r.id},this.value)`)}</td>
-            <td><input class="finput" type="date" style="width:130px;font-size:12px;" id="trxExp_${jenis}_${r.id}" value="${esc(r.tglExp || '')}"
-                onchange="trxGridSetTglExp('${jenis}',${r.id},this.value)"></td>
+                onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('trxModal_${jenis}_${r.id}')?.focus();}"></td>
+            <td>${numCell(`trxModal_${jenis}_${r.id}`, r.modal, `trxGridSetModal('${jenis}',${r.id},this.value)`)}</td>
+            <td>${numCell(`trxDiskonRp_${jenis}_${r.id}`, r.diskon, `trxGridSetDiskonRp('${jenis}',${r.id},this.value)`, 90)}</td>
             ${ppnCell(r)}
             <td class="r" id="trxSubtotal_${jenis}_${r.id}" style="font-weight:700;">${R(Number(r.qty) * Number(r.harga) - Number(r.diskon || 0))}</td>
-            <td><button type="button" class="row-del" onclick="trxGridRemoveRow('${jenis}',${r.id})">✕</button></td>
+            <td><button type="button" class="row-del" onclick="trxGridRemoveRow('${jenis}',${r.id})" title="Hapus baris">✕</button></td>
         </tr>`).join('');
     } else {
         // Grid Input Penjualan: 4 chip harga acuan → klik utk isi "Harga Dipakai" (perilaku lama, tidak berubah).
@@ -569,8 +558,7 @@ window.trxGridSimpan = async (jenis, elId) => {
     }
     let supplier = null;
     if (jenis === 'beli') {
-        supplier = document.getElementById(jenis + '_sup').value;
-        if (!supplier) { toast('Supplier wajib dipilih', 'err'); return; }
+        supplier = document.getElementById(jenis + '_sup')?.value || null; // opsional
     }
     const keteranganEl = document.getElementById(jenis + '_ket');
     const keterangan = keteranganEl && keteranganEl.value.trim() ? keteranganEl.value.trim() : null;
@@ -633,8 +621,7 @@ window.trxGridSimpan = async (jenis, elId) => {
             keterangan, no_nota: noNota, ppn: r.ppn || null,
         };
         if (jenis === 'beli') {
-            payload.supplier = supplier;
-            if (r.tglExp) payload.tgl_exp = r.tglExp;
+            if (supplier) payload.supplier = supplier;
         }
         try {
             await apiPost(`/transaksi/${jenis}`, payload);
@@ -648,10 +635,7 @@ window.trxGridSimpan = async (jenis, elId) => {
             const b = getBarang(r.kode);
             if (!b) continue;
             try {
-                await apiPut(`/barang/${b.id}`, {
-                    modal: r.modal, harga_jual: r.hj, harga_grosir: r.hg, harga_cabang: r.hc,
-                    cabang, // harga jual disimpan sebagai harga cabang ini; harga standar katalog tidak ditimpa
-                });
+                await apiPut(`/master/barang/${b.id}`, { modal: r.modal }); // hanya harga beli; harga jual tidak disentuh
                 masterUpdated++;
             } catch (err) { masterGagal.push(`${r.kode}: ${err.message}`); }
         }
@@ -661,8 +645,8 @@ window.trxGridSimpan = async (jenis, elId) => {
 
     if (sukses) {
         toast(`${sukses} barang berhasil disimpan${jenis === 'jual' ? ' & stok otomatis berkurang' : ' & stok otomatis bertambah'}`
-            + (masterUpdated ? `, harga ${masterUpdated} barang di Master ikut ter-update` : ''));
-        window._trxGrid[jenis] = jenis === 'beli' ? trxGridSeedRows(jenis, 12) : [trxGridBlankRow()];
+            + (masterUpdated ? `, harga beli ${masterUpdated} barang di Master ikut ter-update` : ''));
+        window._trxGrid[jenis] = jenis === 'beli' ? trxGridSeedRows(jenis, 3) : [trxGridBlankRow()];
         // Muat ulang Master Barang kalau harga baru saja diupdate dari sini,
         // supaya baris berikutnya (atau modul lain) langsung pakai harga terbaru.
         if (jenis === 'beli' && masterUpdated) await loadMasterData();
@@ -776,9 +760,9 @@ async function renderJualBeli(jenis, elId, page = 1) {
                     </div>
                     ${!isJ ? `
                     <div class="fgroup">
-                        <label class="flabel">Supplier <span style="color:var(--red);">*wajib</span></label>
+                        <label class="flabel">Supplier <span style="color:var(--ink3);font-weight:400;">(opsional)</span></label>
                         <select class="fselect" id="${jenis}_sup">${supplierOpts()}</select>
-                        <span class="fhint">${STATE.supplier?.length ? '' : '⚠️ Belum ada data supplier — tambahkan dulu di Data Master > Supplier'}</span>
+                        <span class="fhint">${STATE.supplier?.length ? 'Boleh dikosongkan, isi nanti lewat Riwayat Pembelian' : 'Belum ada data supplier — import di Data Master > Supplier, atau kosongkan dulu'}</span>
                     </div>` : ''}
                     <div class="fgroup">
                         <label class="flabel">Keterangan</label>
@@ -789,10 +773,10 @@ async function renderJualBeli(jenis, elId, page = 1) {
                 <div class="note note-b" style="margin:12px 0;"><span class="note-ico">💡</span>
                     ${isJ
                         ? `<span>Klik salah satu angka <strong>HRG BELI / HGA TOKO / HRG PARTAI / HRG CABANG</strong> di baris barang untuk langsung memakai harga itu — kolom "Harga Dipakai" tetap bisa diedit manual. Kolom <strong>PPN</strong> per baris bisa di-override langsung di sini (tidak harus ikut status di Master Barang) — kalau beberapa/semua barang di transaksi ini statusnya sama, pakai tombol "Terapkan" di bawah tabel supaya tidak perlu ubah satu-satu.</span>`
-                        : `<span>Ketik nama/kode barang, langsung terisi harga dari Master Barang — tinggal ketik lagi utk baris berikutnya (Enter di kolom Qty otomatis pindah baris). <strong>HRG BELI</strong> bisa diedit; 3 harga jual di sebelahnya ikut naik/turun sesuai <strong>%</strong> markup masing-masing (atau ubah harga/persennya langsung, dua arah saling menyesuaikan). <strong>DISC%/RUPIAH</strong> juga dua arah. Isi <strong>Kadaluarsa</strong> kalau barang ini punya tanggal exp — otomatis tercatat ke Data Master.</span>`}
+                        : `<span>Ketik nama/kode barang → harga beli terisi dari Master Barang (bisa diubah). Enter di kolom Qty pindah ke Harga Beli; baris baru muncul otomatis saat baris terakhir terisi. Supplier boleh dikosongkan dulu dan diisi belakangan dari Riwayat Pembelian.</span>`}
                 </div>
 
-                <div class="tscroll" style="max-height:${isJ ? 440 : 560}px;">
+                <div class="tscroll" style="max-height:${isJ ? 440 : 360}px;">
                 <table class="trx-grid-table${isJ ? '' : ' trx-grid-beli'}" id="trxGridTbl_${jenis}">
                     <thead><tr>
                         ${isJ ? `
@@ -808,19 +792,11 @@ async function renderJualBeli(jenis, elId, page = 1) {
                         <th style="width:120px;">PPN</th>
                         <th class="r">Subtotal</th>
                         <th></th>` : `
-                        <th style="min-width:170px;">Barang</th>
-                        <th style="width:80px;">Satuan</th>
-                        <th class="r" style="width:60px;">Qty</th>
-                        <th class="r" style="width:90px;">HRG BELI</th>
-                        <th class="r" style="width:90px;">HGA TOKO</th>
-                        <th class="r" style="width:58px;">%</th>
-                        <th class="r" style="width:90px;">HRG PARTAI</th>
-                        <th class="r" style="width:58px;">%</th>
-                        <th class="r" style="width:90px;">HRG CABANG</th>
-                        <th class="r" style="width:58px;">%</th>
-                        <th class="r" style="width:58px;">DISC%</th>
-                        <th class="r" style="width:90px;">RUPIAH</th>
-                        <th style="width:132px;">Kadaluarsa</th>
+                        <th style="min-width:220px;">Barang</th>
+                        <th style="width:90px;">Satuan</th>
+                        <th class="r" style="width:80px;">Qty</th>
+                        <th class="r" style="width:120px;">Harga Beli</th>
+                        <th class="r" style="width:100px;">Diskon (Rp)</th>
                         <th style="width:120px;">PPN</th>
                         <th class="r">Subtotal</th>
                         <th></th>`}
@@ -845,7 +821,7 @@ async function renderJualBeli(jenis, elId, page = 1) {
                 ${!isJ ? `
                 <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink3);margin-top:12px;">
                     <input type="checkbox" id="trxBeliUpdateMaster" checked>
-                    Sekalian update <strong>HRG BELI / HGA TOKO / HRG PARTAI / HRG CABANG</strong> di Master Barang sesuai angka di tabel atas (barang yang dikenal saja)
+                    Simpan <strong>Harga Beli</strong> ini sebagai harga beli terakhir di Master Barang (harga jual tidak berubah)
                 </label>` : ''}
                 <button class="btn btn-p" style="margin-top:14px;" onclick="trxGridSimpan('${jenis}','${elId}')">
                     💾 Simpan ${isJ ? 'Penjualan' : 'Pembelian'}
@@ -997,7 +973,7 @@ async function renderJualBeli(jenis, elId, page = 1) {
         // Inisialisasi grid multi-baris — kalau sebelumnya sudah ada baris yang
         // diisi (mis. user pindah sub-tab lalu balik lagi), datanya tetap dipakai.
         if (!window._trxGrid[jenis] || !window._trxGrid[jenis].length) {
-            window._trxGrid[jenis] = jenis === 'beli' ? trxGridSeedRows(jenis, 12) : [trxGridBlankRow()];
+            window._trxGrid[jenis] = jenis === 'beli' ? trxGridSeedRows(jenis, 3) : [trxGridBlankRow()];
         }
         trxGridRenderBody(jenis);
 

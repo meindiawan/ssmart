@@ -15,7 +15,7 @@ const TAB_META = {
     kontak     : { title: 'Kontak',              desc: 'Buku alamat karyawan, pelanggan & supplier — riwayat hutang piutang' },
     poin       : { title: 'Poin Member',         desc: 'Rekap poin member lama per cabang — cari, gabungkan nama sama, tukar hadiah' },
     aset       : { title: 'Aset Tetap',          desc: 'Kendaraan, peralatan & perabotan toko — penyusutan garis lurus otomatis ke Jurnal' },
-    jurnal     : { title: 'Jurnal & Buku Besar', desc: 'Jurnal dibuat otomatis dari semua transaksi' },
+    jurnal     : { title: 'Jurnal & Buku Besar', desc: 'Jurnal otomatis dari semua transaksi + jurnal manual & memorial' },
     laporan    : { title: 'Laporan Keuangan',    desc: 'Neraca saldo, laba rugi, neraca, dan rekap PPN' },
     sid        : { title: 'Integrasi SID Kasir', desc: 'Sinkronisasi otomatis data penjualan dari aplikasi SID' },
     sinkron    : { title: 'Sinkronisasi Data',   desc: 'Bandingkan file Excel import dengan data tersimpan — cek transaksi yang tidak masuk / tidak ikut Jurnal' },
@@ -152,6 +152,7 @@ async function renderSubTabContent(prefix, sub) {
         case 'tx-biaya':      await renderBiaya();              break;
         // Jurnal
         case 'jr-umum':       await renderJurnalUmum();         break;
+        case 'jr-memorial':   await renderJurnalMemorial();     break;
         case 'jr-besar':      await renderBukuBesar();          break;
         // Laporan
         case 'lp-saldo':      await renderNeracaSaldo();        break;

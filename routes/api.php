@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\MutasiKirimController;
 use App\Http\Controllers\Api\AsetController;
 use App\Http\Controllers\Api\SaldoAwalController;
 use App\Http\Controllers\Api\PoinController;
+use App\Http\Controllers\Api\JurnalManualController;
 
 /*
 |--------------------------------------------------------------------------
@@ -40,6 +41,16 @@ Route::prefix('laporan')->group(function () {
     Route::get('/akun-trace',       [DashboardController::class, 'akunTrace']);
     Route::get('/bentukan-ref',     [DashboardController::class, 'bentukanRef']);
     Route::get('/rekap-ppn-detail', [DashboardController::class, 'rekapPpnDetail']);
+});
+
+// ── JURNAL MANUAL & MEMORIAL ────────────────────────────────────────────────
+// Jurnal yang diinput langsung (bukan otomatis dari transaksi); dibaca oleh
+// DashboardController::buildJurnal() sehingga ikut Jurnal Umum & semua laporan.
+Route::prefix('jurnal-manual')->group(function () {
+    Route::get('/',        [JurnalManualController::class, 'index']);
+    Route::post('/',       [JurnalManualController::class, 'store']);
+    Route::put('/{id}',    [JurnalManualController::class, 'update']);
+    Route::delete('/{id}', [JurnalManualController::class, 'destroy']);
 });
 
 // ── ANALISIS ─────────────────────────────────────────────────────────────────

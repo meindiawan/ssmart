@@ -31,6 +31,7 @@ class CabangPurgeService
             $ringkasan['Biaya']             = DB::table('trx_biaya')->where('cabang', $nama)->delete();
             $ringkasan['Mutasi Barang']     = DB::table('trx_mutasi')->where('dari_cabang', $nama)->orWhere('ke_cabang', $nama)->delete();
             $ringkasan['Mutasi Kirim']      = DB::table('mutasi_kirim')->where('dari_cabang', $nama)->orWhere('ke_cabang', $nama)->delete(); // detail ikut cascade
+            $ringkasan['Jurnal Manual']     = \Illuminate\Support\Facades\Schema::hasTable('jurnal_manual') ? DB::table('jurnal_manual')->where('cabang', $nama)->delete() : 0; // detail ikut cascade
             $ringkasan['Barang Kadaluarsa'] = DB::table('barang_kadaluarsa')->where('cabang', $nama)->delete();
 
             // ── Stok ─────────────────────────────────────────────────

@@ -138,6 +138,8 @@ class DashboardController extends Controller
         $hppMap = [
             'trx_jual'          => $hppSvc->hppMapUntukJurnal('trx_jual', DB::table('trx_jual')->pluck('id')->all()),
             'trx_retur'         => $hppSvc->hppMapUntukJurnal('trx_retur', DB::table('trx_retur')->pluck('id')->all()),
+            // Retur JUAL = barang masuk kembali → nilainya ada di sisi 'masuk' Kartu HPP.
+            'trx_retur_jual'    => $hppSvc->hppMasukUntukJurnal('trx_retur', DB::table('trx_retur')->where('jenis', 'Jual')->pluck('id')->all()),
             'barang_keluar'     => $hppSvc->hppMapUntukJurnal('barang_keluar', DB::table('barang_keluar')->pluck('id')->all()),
             'stok_opname_detail'=> $hppSvc->hppNilaiOpname(DB::table('stok_opname_detail')->pluck('id')->all()),
         ];
@@ -306,7 +308,7 @@ class DashboardController extends Controller
                     if ($kena) $lines[] = $this->jl($t->tgl, $t->cabang, $ref, $ket, '2102', $pvn, 0);
                     $lines[] = $this->jl($t->tgl, $t->cabang, $ref, $ket, $acc, 0, $tot);
                     // HPP retur (barang balik ke gudang) dari Kartu HPP, bukan barang.modal
-                    $hpp = $hppMap['trx_retur'][$t->id] ?? 0;
+                    $hpp = $hppMap['trx_retur_jual'][$t->id] ?? 0;
                     if ($hpp > 0) {
                         $lines[] = $this->jl($t->tgl, $t->cabang, $ref, 'HPP – ' . $ket, '1105', $hpp, 0);
                         $lines[] = $this->jl($t->tgl, $t->cabang, $ref, 'HPP – ' . $ket, '5101', 0, $hpp);
@@ -505,8 +507,127 @@ class DashboardController extends Controller
                 }
             });
 
+        // Mutasi Barang antar cabang & Jurnal Manual/Memorial
+        $this->tambahJurnalMutasi($lines, $hppSvc, $cabang, $dari, $sampai);
+        $this->tambahJurnalManual($lines, $cabang, $dari, $sampai);
+
         usort($lines, fn($a, $b) => strcmp($a['tgl'] . $a['ref'], $b['tgl'] . $b['ref']));
         return $lines;
+    }
+
+    /**
+     * ── JURNAL MUTASI BARANG (antar cabang / pusat → cabang) ──────────────
+     * Nilai barang = qty × HPP rata-rata cabang pengirim SAAT dikirim (Kartu
+     * HPP). Barang yang belum pernah dibeli → nilai 0 → tidak ada jurnal
+     * (konsisten dengan aturan "HPP hanya dari pembelian").
+     *
+     *  1) KIRIM (cabang asal, tgl kirim)
+     *       Dr 1108 Persediaan Dalam Pengiriman      xxx
+     *         Cr 1105 Persediaan Barang                  xxx
+     *  2) TERIMA / ACC (tgl konfirmasi)
+     *     Cabang asal (pengirim):
+     *       Dr 1109 Piutang Antar Cabang      (nilai diterima)
+     *       Dr/Cr 5102 Penyesuaian Stok       (selisih kirim vs terima, kalau ada)
+     *         Cr 1108 Persediaan Dalam Pengiriman    (nilai kirim)
+     *     Cabang tujuan (penerima):
+     *       Dr 1105 Persediaan Barang         (nilai diterima)
+     *         Cr 2104 Hutang Antar Cabang            (nilai diterima)
+     *
+     * Hasilnya tiap cabang tetap seimbang sendiri-sendiri; 1109 & 2104 saling
+     * meniadakan di laporan gabungan. Pelunasan hutang cabang ke pusat dicatat
+     * lewat Jurnal Memorial (kategori "Pelunasan Antar Cabang").
+     * Mutasi berstatus Dibatalkan tidak dijurnal (stok sudah dikembalikan).
+     * trx_mutasi (lama, sekali jalan): langsung Dr 1109 / Cr 1105 di asal dan
+     * Dr 1105 / Cr 2104 di tujuan pada tanggal yang sama.
+     */
+    private function tambahJurnalMutasi(array &$lines, \App\Services\HppService $hppSvc, ?string $cabang, ?string $dari, ?string $sampai): void
+    {
+        $lolos = fn($cab, $tgl) => (!$cabang || $cab === $cabang)
+            && (!$dari || $tgl >= $dari) && (!$sampai || $tgl <= $sampai);
+        $push = function ($tgl, $cab, $ref, $ket, $akun, $D, $K) use (&$lines, $lolos) {
+            if ($D == 0 && $K == 0) return;
+            if (!$lolos($cab, $tgl)) return;
+            $lines[] = $this->jl($tgl, $cab, $ref, $ket, $akun, $D, $K);
+        };
+
+        // ── Mutasi paket (mutasi_kirim + detail) ──
+        $headers = DB::table('mutasi_kirim')->where('status', '!=', 'Dibatalkan')->get();
+        if ($headers->isNotEmpty()) {
+            $details = DB::table('mutasi_kirim_detail')->whereIn('mutasi_kirim_id', $headers->pluck('id'))->get()->groupBy('mutasi_kirim_id');
+            $nilaiMap = $hppSvc->nilaiKirimMutasi('mutasi_kirim_detail', $details->flatten()->pluck('id')->all());
+
+            foreach ($headers as $h) {
+                $nKirim = 0; $nTerima = 0; $jml = 0;
+                foreach ($details[$h->id] ?? [] as $d) {
+                    $v = $nilaiMap[$d->id] ?? null;
+                    if (!$v || $v['nilai'] <= 0) continue;
+                    $nKirim  += round($v['nilai']);
+                    $nTerima += round($v['satuan'] * (float) $d->qty_diterima);
+                    $jml++;
+                }
+                if ($nKirim <= 0) continue;
+
+                $ref = $h->no_ref;
+                $ket = 'Mutasi ' . $h->no_ref . ' ' . $h->dari_cabang . ' → ' . $h->ke_cabang . ' (' . $jml . ' barang)';
+                // 1) Kirim
+                $push($h->tgl, $h->dari_cabang, $ref, 'Kirim – ' . $ket, '1108', $nKirim, 0);
+                $push($h->tgl, $h->dari_cabang, $ref, 'Kirim – ' . $ket, '1105', 0, $nKirim);
+
+                // 2) Terima (hanya kalau sudah di-ACC)
+                if (in_array($h->status, ['Selesai', 'Selesai (Ada Selisih)'], true)) {
+                    $tglT  = $h->waktu_terima ? substr($h->waktu_terima, 0, 10) : $h->tgl;
+                    $selisih = $nKirim - $nTerima; // + = barang kurang (kerugian), − = lebih
+                    $ketT = 'Terima – ' . $ket;
+                    $push($tglT, $h->dari_cabang, $ref, $ketT . ' (piutang ke ' . $h->ke_cabang . ')', '1109', $nTerima, 0);
+                    if ($selisih > 0) $push($tglT, $h->dari_cabang, $ref, $ketT . ' (selisih barang kurang)', '5102', $selisih, 0);
+                    if ($selisih < 0) $push($tglT, $h->dari_cabang, $ref, $ketT . ' (selisih barang lebih)', '5102', 0, -$selisih);
+                    $push($tglT, $h->dari_cabang, $ref, $ketT, '1108', 0, $nKirim);
+                    $push($tglT, $h->ke_cabang, $ref, $ketT, '1105', $nTerima, 0);
+                    $push($tglT, $h->ke_cabang, $ref, $ketT . ' (hutang ke ' . $h->dari_cabang . ')', '2104', 0, $nTerima);
+                }
+            }
+        }
+
+        // ── Mutasi lama (trx_mutasi, 1 baris = 1 barang, langsung selesai) ──
+        $lama = DB::table('trx_mutasi')->get();
+        if ($lama->isNotEmpty()) {
+            $nilaiMap = $hppSvc->nilaiKirimMutasi('trx_mutasi', $lama->pluck('id')->all());
+            foreach ($lama as $m) {
+                $v = $nilaiMap[$m->id] ?? null;
+                $n = $v ? round($v['nilai']) : 0;
+                if ($n <= 0) continue;
+                $ref = 'MT-' . $m->id;
+                $ket = 'Mutasi ' . $m->dari_cabang . ' → ' . $m->ke_cabang . ' (' . $m->kode_barang . ')';
+                $push($m->tgl, $m->dari_cabang, $ref, $ket . ' (piutang ke ' . $m->ke_cabang . ')', '1109', $n, 0);
+                $push($m->tgl, $m->dari_cabang, $ref, $ket, '1105', 0, $n);
+                $push($m->tgl, $m->ke_cabang, $ref, $ket, '1105', $n, 0);
+                $push($m->tgl, $m->ke_cabang, $ref, $ket . ' (hutang ke ' . $m->dari_cabang . ')', '2104', 0, $n);
+            }
+        }
+    }
+
+    /** Jurnal Manual (JU-) & Jurnal Memorial (JM-) dari tabel jurnal_manual. */
+    private function tambahJurnalManual(array &$lines, ?string $cabang, ?string $dari, ?string $sampai): void
+    {
+        if (!\Illuminate\Support\Facades\Schema::hasTable('jurnal_manual')) return; // belum migrate
+
+        $hq = DB::table('jurnal_manual');
+        if ($cabang) $hq->where('cabang', $cabang);
+        if ($dari)   $hq->where('tgl', '>=', $dari);
+        if ($sampai) $hq->where('tgl', '<=', $sampai);
+        $headers = $hq->get();
+        if ($headers->isEmpty()) return;
+
+        $details = DB::table('jurnal_manual_detail')->whereIn('jurnal_manual_id', $headers->pluck('id'))
+            ->orderBy('id')->get()->groupBy('jurnal_manual_id');
+
+        foreach ($headers as $h) {
+            $label = ($h->jenis === 'Memorial' ? 'Memorial' : 'Jurnal Manual') . ($h->kategori ? ' ' . $h->kategori : '');
+            foreach ($details[$h->id] ?? [] as $d) {
+                $ket = $label . ' – ' . $h->keterangan . ($d->keterangan ? ' (' . $d->keterangan . ')' : '');
+                $lines[] = $this->jl($h->tgl, $h->cabang, $h->no_jurnal, $ket, (string) $d->kode_akun, (float) $d->debit, (float) $d->kredit);
+            }
+        }
     }
 
     /** Apakah baris trx_jual ini milik shift/kasir yang dipilih? Aturan shift
@@ -828,6 +949,25 @@ class DashboardController extends Controller
             } elseif ($akun->kat === 'Modal') {
                 $val = $this->balAkun($jurnal, $akun->kode, 'K');
                 if ($val != 0) $modal[] = ['kode' => $akun->kode, 'nama' => $akun->nama, 'nilai' => $val];
+            }
+        }
+
+        // Laporan GABUNGAN semua cabang: Piutang Antar Cabang (1109) & Hutang Antar
+        // Cabang (2104) adalah tagihan internal yang saling meniadakan — dieliminasi
+        // supaya Aset & Liabilitas tidak menggelembung. (Per cabang tetap tampil.)
+        if (!$cabang) {
+            $idxP = array_search('1109', array_column($aset, 'kode'), true);
+            $idxH = array_search('2104', array_column($liab, 'kode'), true);
+            $nP = $idxP !== false ? $aset[$idxP]['nilai'] : 0;
+            $nH = $idxH !== false ? $liab[$idxH]['nilai'] : 0;
+            $elim = min($nP, $nH);
+            if ($elim > 0) {
+                $aset[$idxP]['nilai'] -= $elim;
+                $liab[$idxH]['nilai'] -= $elim;
+                if (abs($aset[$idxP]['nilai']) < 0.5) unset($aset[$idxP]);
+                if (abs($liab[$idxH]['nilai']) < 0.5) unset($liab[$idxH]);
+                $aset = array_values($aset);
+                $liab = array_values($liab);
             }
         }
 

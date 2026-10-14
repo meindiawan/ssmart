@@ -301,6 +301,37 @@ class HppService
             ->pluck('nilai_keluar', 'ref_id')->toArray();
     }
 
+    /** Nilai HPP baris MASUK (mis. Retur Jual: barang kembali ke gudang) berdasarkan
+     *  tabel & id sumbernya. Retur Jual itu event 'masuk' (qty_masuk), jadi TIDAK
+     *  terambil oleh hppMapUntukJurnal() yang hanya membaca baris 'keluar' —
+     *  akibatnya HPP Retur Jual dulu tidak pernah ikut jurnal. */
+    public function hppMasukUntukJurnal(string $refTabel, array $refIds): array
+    {
+        if (empty($refIds)) return [];
+        return DB::table('hpp_kartu')
+            ->where('ref_tabel', $refTabel)->whereIn('ref_id', $refIds)
+            ->where('qty_masuk', '>', 0)
+            ->pluck('nilai_masuk', 'ref_id')->toArray();
+    }
+
+    /** Nilai persediaan (Rp) yang DIKIRIM pada tiap baris Mutasi (keluar dari
+     *  cabang asal) = qty_kirim × HPP rata-rata saat dikirim. 0 = barang belum
+     *  pernah dibeli (tidak ada nilai → tidak ikut jurnal). Dipakai buildJurnal()
+     *  utk jurnal Mutasi Barang antar cabang.
+     *  $refTabel: 'mutasi_kirim_detail' (paket) | 'trx_mutasi' (lama). */
+    public function nilaiKirimMutasi(string $refTabel, array $refIds): array
+    {
+        if (empty($refIds)) return [];
+        return DB::table('hpp_kartu')
+            ->where('ref_tabel', $refTabel)->whereIn('ref_id', $refIds)
+            ->where('qty_keluar', '>', 0)
+            ->get(['ref_id', 'nilai_keluar', 'qty_keluar'])
+            ->mapWithKeys(fn($r) => [$r->ref_id => [
+                'nilai' => (float) $r->nilai_keluar,
+                'satuan' => (float) $r->qty_keluar > 0 ? (float) $r->nilai_keluar / (float) $r->qty_keluar : 0.0,
+            ]])->toArray();
+    }
+
     /** Nilai (bertanda) Kartu HPP utk baris Opname — dipakai jurnal selisih
      *  stok opname (bisa masuk/qty+ maupun keluar/qty- tergantung selisih). */
     public function hppNilaiOpname(array $refIds): array
