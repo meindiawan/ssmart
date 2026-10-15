@@ -69,6 +69,15 @@ class HppService
      *  beli terakhir itu. false = ketat per cabang (belum beli di cabang itu = 0). */
     public const PAKAI_HARGA_BELI_CABANG_LAIN = true;
 
+    /** true = kalau barang itu PERNAH dibeli (tanggal berapa pun) tapi penjualannya
+     *  terjadi SEBELUM pembelian pertama, HPP penjualan itu memakai rata-rata
+     *  pembelian TERAWAL barang tsb (cabang yang sama dulu, kalau tidak ada baru
+     *  cabang lain). Pembelian yang datang belakangan TIDAK mengubah HPP
+     *  penjualan sebelumnya (rata-rata tetap berjalan menurut urutan tanggal).
+     *  false = penjualan sebelum pembelian pertama → HPP 0. Barang yang SAMA
+     *  SEKALI belum pernah dibeli selalu HPP 0, apa pun nilai konstanta ini. */
+    public const PAKAI_PEMBELIAN_TERAWAL = true;
+
     /** Harga masuk utk sebuah event masuk. Return null = tidak ada basis
      *  biaya (tidak ikut dicatat di Kartu HPP). $lastBeli diisi kalau event
      *  ini adalah Pembelian berharga > 0. */
@@ -97,13 +106,35 @@ class HppService
     }
 
     /** HPP per satuan utk event keluar. 0 = belum ada pembelian. */
-    private function hargaKeluar(array $e, float $hppSebelum, ?float $lastHpp, ?float $lastBeli): float
+    private function hargaKeluar(array $e, float $hppSebelum, ?float $lastHpp, ?float $lastBeli, ?float $beliAwal = null): float
     {
         if (!self::HANYA_DARI_PEMBELIAN && isset($e['harga_override'])) return (float) $e['harga_override'];
         if ($hppSebelum > 0) return $hppSebelum;
         if ($lastHpp !== null && $lastHpp > 0) return $lastHpp;
         if (self::PAKAI_HARGA_BELI_CABANG_LAIN && $lastBeli !== null && $lastBeli > 0) return $lastBeli;
+        // Belum ada pembelian SEBELUM penjualan ini, tapi barangnya pernah dibeli
+        // di tanggal lain → pakai rata-rata pembelian terawal (bukan 0).
+        if (self::PAKAI_PEMBELIAN_TERAWAL && $beliAwal !== null && $beliAwal > 0) return $beliAwal;
         return 0.0;
+    }
+
+    /** Harga rata-rata pembelian pada TANGGAL TERAWAL tiap cabang + gabungan
+     *  semua cabang (kunci '*'). Hanya Pembelian / Barang Masuk berharga > 0
+     *  (Saldo Awal sudah dibuang di gatherEvents). Tanggal sesudahnya tidak ikut,
+     *  jadi pembelian susulan tidak mengubah HPP penjualan yang lebih dulu. */
+    private function hargaBeliTerawal($events): array
+    {
+        $acc = [];
+        foreach ($events as $e) {
+            if ($e['arah'] !== 'masuk' || !in_array($e['ref_tabel'], ['trx_beli', 'barang_masuk'], true)) continue;
+            $h = (float) ($e['harga'] ?? 0); $q = (float) $e['qty'];
+            if ($h <= 0 || $q <= 0) continue;
+            foreach ([$e['cabang'], '*'] as $k) {
+                if (!isset($acc[$k])) $acc[$k] = ['tgl' => $e['tgl'], 'q' => 0.0, 'n' => 0.0];
+                if ($acc[$k]['tgl'] === $e['tgl']) { $acc[$k]['q'] += $q; $acc[$k]['n'] += $q * $h; }
+            }
+        }
+        return array_map(fn($a) => $a['q'] > 0 ? $a['n'] / $a['q'] : 0.0, $acc);
     }
 
     /** Tarif PPN dari Settings (persen → desimal), default 11% — sumber yang
@@ -130,6 +161,7 @@ class HppService
             return;
         }
 
+        $beliAwal = $this->hargaBeliTerawal($events);
         $saldo = [];       // ['cabang' => ['qty'=>float, 'nilai'=>float]]
         $mutasiHpp = [];   // [mutasi_kirim_detail_id => hpp per satuan saat dikirim]
         $lastHpp = [];     // ['cabang' => rata-rata positif terakhir]
@@ -183,7 +215,7 @@ class HppService
             } else {
                 $qty = (float) $e['qty'];
                 // HPP = rata-rata hasil PEMBELIAN. Belum ada pembelian → 0.
-                $hppPakai = $this->hargaKeluar($e, $hppSebelum, $lastHpp[$cab] ?? null, $lastBeli);
+                $hppPakai = $this->hargaKeluar($e, $hppSebelum, $lastHpp[$cab] ?? null, $lastBeli, $beliAwal[$cab] ?? ($beliAwal['*'] ?? null));
                 $nilaiKeluar = $qty * $hppPakai;
 
                 if ($before['qty'] > 0.0001 && $qty < $before['qty'] - 0.0001) {
@@ -372,6 +404,7 @@ class HppService
         // hasil pembelian TAPI sudah punya HPP (> 0) — itu yang membuat akun
         // Persediaan (1105) terkredit lebih besar dari yang pernah didebet.
         // Barang yang belum pernah dibeli → HPP 0 → tidak ada kekurangan.
+        $beliAwal = $this->hargaBeliTerawal($events);
         $saldo = [];
         $lastHpp = [];
         $lastBeli = null;
@@ -393,7 +426,7 @@ class HppService
                 }
             } else {
                 $qty = (float) $e['qty'];
-                $hppPakai = $this->hargaKeluar($e, $hppSebelum, $lastHpp[$cab] ?? null, $lastBeli);
+                $hppPakai = $this->hargaKeluar($e, $hppSebelum, $lastHpp[$cab] ?? null, $lastBeli, $beliAwal[$cab] ?? ($beliAwal['*'] ?? null));
                 $tersedia = $before['qty'] > 0.0001 ? $before['qty'] : 0.0;
                 if ($qty < $tersedia - 0.0001) {
                     $saldo[$cab] = ['qty' => $before['qty'] - $qty, 'nilai' => $before['nilai'] - $qty * $hppSebelum];
