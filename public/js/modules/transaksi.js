@@ -837,6 +837,17 @@ async function renderJualBeli(jenis, elId, page = 1) {
                 <h3>Riwayat ${isJ ? 'Penjualan' : 'Pembelian'}</h3>
                 <div class="meta">${jumlahTrx.toLocaleString('id-ID')} transaksi · Total: <strong>${R(total)}</strong></div>
             </div>
+            <div class="note note-b no-print" style="margin:0;border-radius:0;font-size:12px;">
+                <span class="note-ico">ℹ️</span>
+                <span><strong>Cara baca baris barang</strong> (buka nota dengan klik ▸):
+                    <strong>Qty</strong> = jumlah &amp; satuan ·
+                    <strong>${isJ ? 'Harga Jual' : 'Harga Beli'}</strong> = harga per satuan ·
+                    <strong>Diskon</strong> = potongan harga baris ini (Rp, <em>0</em> = tidak ada diskon) ·
+                    ${isJ ? '<strong>HPP</strong> = modal barang terjual baris ini (total, dari Kartu HPP; <em>0</em> = belum ada pembelian) · ' : ''}
+                    <strong>PPN</strong> = Kena PPN / Non-PPN ·
+                    <strong>Subtotal</strong> = Qty × ${isJ ? 'Harga Jual' : 'Harga Beli'} − Diskon.
+                </span>
+            </div>
             <div class="box-bd pad0">
                 ${list.length ? `
                 <!-- Tabel asli disembunyikan, cuma dipakai sebagai sumber untuk tombol
@@ -845,7 +856,7 @@ async function renderJualBeli(jenis, elId, page = 1) {
                     <thead><tr>
                         <th>Tanggal</th><th>Cabang</th><th>Barang</th>
                         <th class="r">Qty</th><th class="r">Harga</th>
-                        <th class="r">Diskon</th>${!isJ ? '<th>Supplier</th><th>Operator</th>' : ''}
+                        <th class="r">Diskon</th>${isJ ? '<th class="r">HPP</th>' : ''}${!isJ ? '<th>Supplier</th><th>Operator</th>' : ''}
                         <th class="r">Total</th><th>Bayar</th>
                     </tr></thead>
                     <tbody>${list.map(t => {
@@ -858,6 +869,7 @@ async function renderJualBeli(jenis, elId, page = 1) {
                         <td>${Number(t.qty).toLocaleString('id-ID')} ${esc(t.satuan||'')}</td>
                         <td>${R(t.harga)}</td>
                         <td>${disc ? R(disc) : ''}</td>
+                        ${isJ ? `<td>${R(t.hpp_kartu || 0)}</td>` : ''}
                         ${!isJ ? `<td>${esc(t.supplier || '')}</td><td>${esc(t.operator || '')}</td>` : ''}
                         <td>${R(tot)}</td>
                         <td>${esc(t.bayar)}</td>
@@ -920,15 +932,16 @@ async function renderJualBeli(jenis, elId, page = 1) {
                                 </summary>
                                 <div style="max-height:280px;overflow-y:auto;">
                                     <table>
-                                        <thead><tr>
-                                            <th>Barang</th><th class="r">Qty</th><th class="r">Harga</th>
-                                            <th class="r">Diskon</th><th>PPN</th><th class="r">Subtotal</th>
+                                        <thead style="display:table-header-group;"><tr>
+                                            <th>Barang</th><th class="r">Qty</th><th class="r">${isJ ? 'Harga Jual' : 'Harga Beli'}</th>
+                                            <th class="r">Diskon</th>${isJ ? '<th class="r">HPP</th>' : ''}<th>PPN</th><th class="r">Subtotal</th>
                                         </tr></thead>
                                         <tbody>${rows.map(t => `<tr>
                                             <td>${t.tidak_dikenal ? `⚠️ ${esc(t.kode_asli || t.kode_barang)}` : `<span class="link-barang" onclick="event.stopPropagation();lihatKartuHpp('${esc(t.kode_barang)}')" title="Klik untuk lihat riwayat masuk/keluar & HPP rata-rata barang ini">${esc(t.nama_barang || t.kode_barang)}</span>`}</td>
                                             <td class="r">${Number(t.qty).toLocaleString('id-ID')} ${esc(t.satuan||'')}</td>
                                             <td class="r">${R(t.harga)}</td>
-                                            <td class="r">${t.diskon ? R(t.diskon) : '–'}</td>
+                                            <td class="r">${t.diskon ? R(t.diskon) : '0'}</td>
+                                            ${isJ ? `<td class="r" title="HPP total baris ini (Kartu HPP)" ${Number(t.hpp_kartu || 0) > 0 ? '' : 'style="color:var(--red);"'}>${R(t.hpp_kartu || 0)}</td>` : ''}
                                             <td><span class="badge ${t.ppn_efektif === 'Kena PPN' ? 'badge-ppn' : 'badge-noppn'}" title="${t.ppn ? 'Di-override khusus transaksi ini' : 'Ikut status di Master Barang'}">${esc(t.ppn_efektif || '–')}${t.ppn ? ' ✎' : ''}</span></td>
                                             <td class="r">${R(Number(t.qty) * Number(t.harga) - Number(t.diskon || 0))}</td>
                                         </tr>`).join('')}</tbody>
@@ -955,7 +968,7 @@ async function renderJualBeli(jenis, elId, page = 1) {
                                     ${t.tidak_dikenal
                                         ? `⚠️ Kode tidak dikenal: ${esc(t.kode_asli || t.kode_barang)}`
                                         : `<span class="link-barang" onclick="event.stopPropagation();lihatKartuHpp('${esc(t.kode_barang)}')" title="Klik untuk lihat riwayat masuk/keluar & HPP rata-rata barang ini">${esc(t.nama_barang || t.kode_barang)}</span>`}
-                                    · ${Number(t.qty).toLocaleString('id-ID')} ${esc(t.satuan||'')} × ${R(t.harga)}${disc ? ` − diskon ${R(disc)}` : ''}
+                                    · ${Number(t.qty).toLocaleString('id-ID')} ${esc(t.satuan||'')} × ${R(t.harga)}${disc ? ` − diskon ${R(disc)}` : ''}${isJ ? ` · HPP ${R(t.hpp_kartu || 0)}` : ''}
                                     ${!isJ ? (t.supplier ? ` · ${esc(t.supplier)}` : ` · <span class="badge badge-warn" style="cursor:pointer;" onclick="bukaIsiSupplierBeli({ids:[${t.id}]})" title="Belum ada supplier — klik untuk isi">⚠️ ✏️ Isi Supplier</span>`) : ''}${!isJ && t.operator ? ` · <span class="badge badge-info" title="Akun/operator yang menginput">👤 ${esc(t.operator)}</span>` : ''} · ${esc(t.bayar)}
                                 </span>
                                 <span class="jr-group-amt">Total ${R(tot)}</span>

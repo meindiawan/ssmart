@@ -748,28 +748,42 @@ class DashboardController extends Controller
 
     public function bukuBesar(Request $request)
     {
-        // Catatan: TIDAK menerima filter dari/sampai (beda dengan Jurnal Umum &
-        // laporan keuangan lain) — kolom "saldo" berjalan di Buku Besar butuh
-        // SEMUA transaksi sejak awal supaya saldo akhir akurat; kalau dipotong
-        // per tanggal, saldo awal periode akan salah mulai dari 0.
-        $cabang = $request->get('cabang');
+        // CUT-OFF: boleh menerima dari/sampai. Saldo berjalan tetap benar karena
+        // seluruh jurnal sejak awal dibaca dulu; transaksi SEBELUM "dari" tidak
+        // ditampilkan barisnya tapi dijumlahkan jadi SALDO AWAL periode.
+        // Kosong = semua periode (saldo awal 0).
+        $cabang   = $request->get('cabang');
         $kodeAkun = $request->get('kode_akun', '1101');
-        $jurnal = $this->buildJurnal($cabang);
-        $akun = DB::table('coa')->where('kode', $kodeAkun)->first();
+        $dari     = $request->get('dari');
+        $sampai   = $request->get('sampai');
+        $jurnal   = $this->buildJurnal($cabang);
+        $akun     = DB::table('coa')->where('kode', $kodeAkun)->first();
 
+        $tglKey = fn($r) => substr((string) ($r['tgl'] ?? ''), 0, 10);
         $rows = array_filter($jurnal, fn($j) => $j['akun'] === $kodeAkun);
-        $saldo = 0;
+
+        $saldo = 0;      // saldo berjalan
+        $saldoAwal = 0;  // akumulasi transaksi sebelum $dari
+        $totD = 0; $totK = 0;
         $result = [];
         foreach ($rows as $r) {
-            if ($akun) {
-                $saldo += $akun->normal === 'D' ? ($r['D'] - $r['K']) : ($r['K'] - $r['D']);
-            }
+            $t = $tglKey($r);
+            if ($sampai && $t > $sampai) continue; // lewat cut-off akhir
+            $delta = $akun ? ($akun->normal === 'D' ? ($r['D'] - $r['K']) : ($r['K'] - $r['D'])) : 0;
+            $saldo += $delta;
+            if ($dari && $t < $dari) { $saldoAwal = $saldo; continue; }
+            $totD += $r['D']; $totK += $r['K'];
             $result[] = array_merge($r, ['saldo' => $saldo]);
         }
 
         return response()->json([
-            'akun'   => $akun,
-            'data'   => array_values($result),
+            'akun'        => $akun,
+            'data'        => array_values($result),
+            'dari'        => $dari ?: null,
+            'sampai'      => $sampai ?: null,
+            'saldo_awal'  => $saldoAwal,
+            'total_D'     => $totD,
+            'total_K'     => $totK,
             'saldo_akhir' => $saldo,
         ]);
     }
@@ -844,6 +858,7 @@ class DashboardController extends Controller
         $jurnal = $this->buildJurnal($cabang, $dari, $sampai, $shift ?: null, $kasir ?: null);
         $lr     = $this->calcLabaRugi($jurnal);
         $coaAll = DB::table('coa')->get();
+        $tanpaModal = $perKasir ? [] : $this->barangTanpaModal($cabang, $dari, $sampai); // daftar lengkap (bukan cuma 50)
 
         $pendRows = [];
         $bebanRows = [];
@@ -862,7 +877,8 @@ class DashboardController extends Controller
             'beban_detail'              => $bebanRows,
             // Peringatan data (barang tanpa modal / tak terdeteksi) berlaku utk
             // laporan keseluruhan, bukan per shift/kasir — dikosongkan di mode itu.
-            'barang_tanpa_modal'        => $perKasir ? [] : $this->barangTanpaModal($cabang, $dari, $sampai),
+            'hpp_rincian'               => $perKasir ? null : $this->hppRincian($cabang, $dari, $sampai, (float) $lr['hpp']),
+            'barang_tanpa_modal'        => $tanpaModal,
             'barang_tidak_terdeteksi'   => $perKasir ? ['jumlah_kode' => 0, 'omzet' => 0] : $this->barangTidakTerdeteksiRingkas($cabang, $dari, $sampai),
             'filter_shift'              => $shift ?: null,
             'filter_kasir'              => $kasir ?: null,
@@ -896,6 +912,47 @@ class DashboardController extends Controller
         ];
     }
 
+    // Rincian HPP untuk laporan pajak: Persediaan Awal + Pembelian
+    // (+/- penyesuaian lain) - Persediaan Akhir = HPP. Nilai persediaan diambil
+    // dari Kartu HPP (saldo nilai terakhir tiap barang per cabang pada tanggal itu).
+    // HPP di Laba Rugi (akun 5101) tetap jadi angka acuan; selisih akibat retur,
+    // barang masuk/keluar, mutasi & opname ditampilkan terpisah supaya rumusnya klop.
+    public function hppRincian(?string $cabang, ?string $dari, ?string $sampai, float $hppJurnal): array
+    {
+        $nilaiPersediaan = function (?string $tglBatas, bool $inklusif) use ($cabang) {
+            $op = $inklusif ? '<=' : '<';
+            $sql = "SELECT COALESCE(SUM(hk.saldo_nilai),0) AS n FROM hpp_kartu hk
+                    WHERE hk.id = (SELECT h2.id FROM hpp_kartu h2
+                                   WHERE h2.kode_barang = hk.kode_barang AND h2.cabang = hk.cabang"
+                 . ($tglBatas ? " AND h2.tgl $op ?" : "")
+                 . " ORDER BY h2.tgl DESC, h2.urutan DESC LIMIT 1)"
+                 . ($cabang ? " AND hk.cabang = ?" : "");
+            $bind = [];
+            if ($tglBatas) $bind[] = $tglBatas;
+            if ($cabang)   $bind[] = $cabang;
+            return (float) (DB::selectOne($sql, $bind)->n ?? 0);
+        };
+
+        $awal  = $dari ? $nilaiPersediaan($dari, false) : 0.0;
+        $akhir = $nilaiPersediaan($sampai ?: null, true);
+
+        $q = DB::table('hpp_kartu')->where('tipe', 'Pembelian');
+        if ($cabang) $q->where('cabang', $cabang);
+        if ($dari)   $q->where('tgl', '>=', $dari);
+        if ($sampai) $q->where('tgl', '<=', $sampai);
+        $pembelian = (float) $q->sum('nilai_masuk');
+
+        $lain = $hppJurnal - ($awal + $pembelian - $akhir);
+
+        return [
+            'persediaan_awal'  => round($awal),
+            'pembelian'        => round($pembelian),
+            'penyesuaian_lain' => round($lain),
+            'persediaan_akhir' => round($akhir),
+            'hpp'              => round($hppJurnal),
+        ];
+    }
+
     // Cari barang yang sudah terjual (ada di trx_jual, dalam rentang tanggal
     // $dari–$sampai kalau diisi) tapi Harga Modal-nya masih 0/kosong di Master
     // Barang. Item seperti ini membuat HPP-nya dihitung 0 sehingga LABA
@@ -918,7 +975,7 @@ class DashboardController extends Controller
         return $q->selectRaw('barang.kode, barang.nama, SUM(trx_jual.qty) as qty_terjual, SUM(trx_jual.qty*trx_jual.harga) as omzet')
             ->groupBy('barang.kode', 'barang.nama')
             ->orderByDesc('omzet')
-            ->limit(50)
+            ->limit(3000)
             ->get()
             ->map(fn($r) => ['kode' => $r->kode, 'nama' => $r->nama, 'qty_terjual' => (float)$r->qty_terjual, 'omzet' => (float)$r->omzet])
             ->toArray();

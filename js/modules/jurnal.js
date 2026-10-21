@@ -1,7 +1,7 @@
 /* =============================================================
    jurnal.js — Jurnal Umum & Buku Besar
    Data dari: GET /api/laporan/jurnal
-              GET /api/laporan/buku-besar?kode_akun=&cabang=
+              GET /api/laporan/buku-besar?kode_akun=&cabang=&dari=&sampai=
    Jurnal dibuat OTOMATIS oleh DashboardController::buildJurnal()
    ============================================================= */
 
@@ -234,13 +234,39 @@ function jurnalRowHTML(x) {
 }
 
 /* ── BUKU BESAR ───────────────────────────────────────────── */
+// Cut-off tanggal: transaksi sebelum "Dari" dijumlahkan jadi SALDO AWAL,
+// transaksi setelah "Sampai" tidak ikut. Kosong = semua periode.
+window._bbFilter = window._bbFilter || { dari: '', sampai: '', init: false };
+
+function bbPeriodeLabel() {
+    const f = window._bbFilter;
+    if (!f.dari && !f.sampai) return 'Semua periode';
+    const d = f.dari ? fmtTgl(f.dari) : 'awal';
+    const s = f.sampai ? fmtTgl(f.sampai) : 'sekarang';
+    return `${d} s/d ${s}`;
+}
+window.bbSetPreset = (preset) => {
+    const f = window._bbFilter;
+    if (preset === 'bulan')      { f.dari = lapAwalBulan();  f.sampai = today(); }
+    else if (preset === 'tahun') { f.dari = lapAwalTahun();  f.sampai = today(); }
+    else                         { f.dari = ''; f.sampai = ''; }
+    renderBukuBesar();
+};
+window.bbSetTgl = (field, val) => { window._bbFilter[field] = val; renderBukuBesar(); };
+
 async function renderBukuBesar() {
     const el = document.getElementById('jr-besar');
+    const f  = window._bbFilter;
+    // Pertama kali dibuka: default bulan ini (ringan & umum dipakai).
+    if (!f.init) { f.dari = lapAwalBulan(); f.sampai = today(); f.init = true; }
+    const akunTerpilih = window._bbAkun || (STATE.coa[0] && STATE.coa[0].kode);
 
-    // Buat dropdown pilih akun dari STATE.coa
     const coaOpts = STATE.coa
-        .map(c => `<option value="${esc(c.kode)}">${c.kode} – ${esc(c.nama)}</option>`)
+        .map(c => `<option value="${esc(c.kode)}" ${c.kode === akunTerpilih ? 'selected' : ''}>${c.kode} – ${esc(c.nama)}</option>`)
         .join('');
+    const isBulan = f.dari === lapAwalBulan() && f.sampai === today();
+    const isTahun = f.dari === lapAwalTahun() && f.sampai === today();
+    const isSemua = !f.dari && !f.sampai;
 
     el.innerHTML = `
     <div class="box">
@@ -250,28 +276,42 @@ async function renderBukuBesar() {
                 ${coaOpts}
             </select>
         </div>
+        <div class="export-bar no-print" style="flex-wrap:wrap;gap:8px;padding:10px 18px 0;">
+            <span class="lbl">Cut-off:</span>
+            <button class="btn btn-sm ${isBulan ? 'btn-p' : 'btn-g'}" onclick="bbSetPreset('bulan')">Bulan Ini</button>
+            <button class="btn btn-sm ${isTahun ? 'btn-p' : 'btn-g'}" onclick="bbSetPreset('tahun')">Tahun Ini</button>
+            <button class="btn btn-sm ${isSemua ? 'btn-p' : 'btn-g'}" onclick="bbSetPreset('semua')">Semua</button>
+            <span style="color:var(--ink3);font-size:12px;margin-left:4px;">tanggal:</span>
+            <input class="finput" type="date" value="${f.dari}" onchange="bbSetTgl('dari', this.value)" style="width:150px;padding:6px 8px;">
+            <span style="color:var(--ink3);">s/d</span>
+            <input class="finput" type="date" value="${f.sampai}" onchange="bbSetTgl('sampai', this.value)" style="width:150px;padding:6px 8px;">
+        </div>
         <div style="padding:10px 18px 0;" class="no-print">
             <button class="btn btn-g btn-sm" onclick="exportExcel('tblBB','buku-besar')">📊 Export Excel</button>
             <button class="btn btn-g btn-sm" onclick="printSection('jr-besar','Buku Besar')">🖨️ Print</button>
         </div>
+        <div class="meta" id="bbPeriodeInfo" style="padding:8px 18px 0;"></div>
         <div class="box-bd pad0 tscroll" id="bbArea">
             <div class="loading-state"><div class="loading-spinner"></div><p>Memuat buku besar…</p></div>
         </div>
     </div>`;
 
-    // Fungsi load data buku besar berdasarkan akun & cabang
     async function loadBukuBesar() {
         const kode  = document.getElementById('bbAkun').value;
+        window._bbAkun = kode;
         const cab   = getCabang();
         const bbEl  = document.getElementById('bbArea');
         bbEl.innerHTML = loadingHTML;
 
         try {
-            const res  = await apiGet('/laporan/buku-besar' + buildQuery({ kode_akun: kode, cabang: cab }));
+            const res  = await apiGet('/laporan/buku-besar' + buildQuery({ kode_akun: kode, cabang: cab, dari: f.dari, sampai: f.sampai }));
             const list = res.data || [];
             const akun = res.akun || {};
+            const saldoAwal = Number(res.saldo_awal || 0);
+            const infoEl = document.getElementById('bbPeriodeInfo');
+            if (infoEl) infoEl.textContent = `${akun.nama || kode} · ${cab || 'Semua cabang'} · Periode: ${bbPeriodeLabel()}`;
 
-            bbEl.innerHTML = list.length
+            bbEl.innerHTML = (list.length || saldoAwal !== 0)
                 ? `<table id="tblBB">
                     <thead><tr>
                         <th>Tanggal</th>
@@ -282,6 +322,13 @@ async function renderBukuBesar() {
                         <th class="r">Saldo</th>
                     </tr></thead>
                     <tbody>
+                        <tr style="background:var(--kertas);font-weight:700;">
+                            <td>${f.dari ? fmtTgl(f.dari) : '–'}</td>
+                            <td></td>
+                            <td>Saldo Awal${f.dari ? ' (sebelum ' + fmtTgl(f.dari) + ')' : ''}</td>
+                            <td class="r"></td><td class="r"></td>
+                            <td class="r" style="font-family:var(--F-m);">${R(saldoAwal)}</td>
+                        </tr>
                         ${list.map(x => `<tr>
                             <td>${fmtTgl(x.tgl)}</td>
                             <td style="font-family:var(--F-m);font-size:12px;">
@@ -295,21 +342,25 @@ async function renderBukuBesar() {
                     </tbody>
                     <tfoot>
                         <tr>
-                            <td colspan="5">Saldo Akhir — ${esc(akun.nama || kode)}</td>
+                            <td colspan="3">Total mutasi periode ${bbPeriodeLabel()}</td>
+                            <td class="r">${R(res.total_D || 0)}</td>
+                            <td class="r">${R(res.total_K || 0)}</td>
+                            <td></td>
+                        </tr>
+                        <tr>
+                            <td colspan="5">Saldo Akhir — ${esc(akun.nama || kode)}${f.sampai ? ' (per ' + fmtTgl(f.sampai) + ')' : ''}</td>
                             <td>${R(res.saldo_akhir)}</td>
                         </tr>
                     </tfoot>
                 </table>`
-                : '<div class="empty"><div class="ico">📒</div><strong>Belum ada mutasi pada akun ini.</strong></div>';
+                : '<div class="empty"><div class="ico">📒</div><strong>Belum ada mutasi pada akun ini di periode tersebut.</strong></div>';
 
         } catch (err) {
             bbEl.innerHTML = `<div class="note note-y"><span>⚠️</span><span>${esc(err.message)}</span></div>`;
         }
     }
 
-    // Event listener: load ulang saat akun berubah
     document.getElementById('bbAkun').addEventListener('change', loadBukuBesar);
-    // Load awal dengan akun pertama
     await loadBukuBesar();
 }
 

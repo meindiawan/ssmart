@@ -92,6 +92,42 @@ window.lapSetPresetNeraca = (preset) => {
     else if (preset === 'tahun') f.sampai = lapAkhirTahun();
     renderNeraca();
 };
+// Daftar LENGKAP barang yang sudah terjual tapi Harga Modal-nya 0 (klik "… dan N lainnya").
+window.lapLihatTanpaModal = () => {
+    const list = window._lrTanpaModal || [];
+    const totOmzet = list.reduce((a, b) => a + Number(b.omzet || 0), 0);
+    openM(`
+    <div class="mhd"><h3>⚠️ ${list.length} Barang Terjual Tanpa Harga Modal</h3><button class="mclose" onclick="closeM()">×</button></div>
+    <div class="mbd">
+        <div class="note note-y" style="margin-bottom:10px;"><span>ℹ️</span>
+            <span>Urut dari omzet terbesar. Total omzet barang-barang ini <strong>${R(totOmzet)}</strong>.
+            Isi Harga Modal di Master ▸ Barang, atau pakai tombol perbaikan di laporan.</span></div>
+        <input class="finput" id="tmCari" placeholder="🔍 Cari kode atau nama barang…" style="width:100%;margin-bottom:8px;"
+               oninput="lapFilterTanpaModal(this.value)">
+        <div style="max-height:55vh;overflow:auto;">
+            <table>
+                <thead><tr><th>#</th><th>Kode</th><th>Nama Barang</th><th class="r">Terjual</th><th class="r">Omzet</th></tr></thead>
+                <tbody id="tmBody">${lapBarisTanpaModal(list)}</tbody>
+            </table>
+        </div>
+    </div>`);
+};
+function lapBarisTanpaModal(list) {
+    return list.length ? list.map((b, i) => `<tr>
+        <td>${i + 1}</td>
+        <td style="font-family:var(--F-m);font-size:12px;">${esc(b.kode)}</td>
+        <td><span class="link-barang" onclick="lihatKartuHpp('${esc(b.kode)}')" title="Lihat Kartu HPP barang ini">${esc(b.nama)}</span></td>
+        <td class="r">${Number(b.qty_terjual).toLocaleString('id-ID')}</td>
+        <td class="r">${R(b.omzet)}</td>
+    </tr>`).join('') : '<tr><td colspan="5" style="text-align:center;color:var(--ink3);">Tidak ada yang cocok.</td></tr>';
+}
+window.lapFilterTanpaModal = (q) => {
+    const k = String(q || '').trim().toLowerCase();
+    const all = window._lrTanpaModal || [];
+    const hasil = k ? all.filter(b => String(b.kode).toLowerCase().includes(k) || String(b.nama).toLowerCase().includes(k)) : all;
+    const el = document.getElementById('tmBody');
+    if (el) el.innerHTML = lapBarisTanpaModal(hasil);
+};
 // Tombol "🔧 Perbaiki HPP dari Nota SID" di peringatan Laba Rugi — menarik
 // ulang HPP asli per baris dari nota SID (bukan menebak dari Harga Modal),
 // lalu mengisi Harga Modal Master Barang yang masih 0 dari rata-ratanya.
@@ -390,7 +426,8 @@ async function renderLabaRugi() {
             // rekap kinerja per shift & kasir (sumber sama dgn Analisis Data ▸ Kasir & Shift)
             apiGet('/analisis/kasir' + buildQuery({ cabang: cab, dari: f.dari, sampai: f.sampai })).catch(() => null),
         ]);
-        window._lrData = r; // dipakai lapFormula() untuk baris ringkasan tanpa fetch ulang
+        window._lrData = r; // dipakai lapFormula()
+        window._lrTanpaModal = r.barang_tanpa_modal || []; // dipakai lapLihatTanpaModal() untuk baris ringkasan tanpa fetch ulang
         const pk = !!r.per_kasir_shift; // mode per Shift/Kasir (hanya Penjualan & HPP)
         // Baris akun bisa diklik utk rincian — HANYA di mode keseluruhan (rincian akun
         // tidak mengenal shift, jadi di mode per shift klik dimatikan supaya tidak menyesatkan).
@@ -438,7 +475,7 @@ async function renderLabaRugi() {
                 mengambil HPP asli dari nota penjualan SID (kalau barang tsb pernah tersinkron dari SID):
                 <div style="margin-top:6px;font-size:12px;max-height:120px;overflow-y:auto;">
                     ${r.barang_tanpa_modal.slice(0,15).map(b => `${esc(b.kode)} – ${esc(b.nama)} (terjual ${b.qty_terjual.toLocaleString('id-ID')}, omzet ${R(b.omzet)})`).join('<br>')}
-                    ${r.barang_tanpa_modal.length > 15 ? `<br>… dan ${r.barang_tanpa_modal.length - 15} lainnya` : ''}
+                    ${r.barang_tanpa_modal.length > 15 ? `<br><a href="javascript:void(0)" style="font-weight:700;text-decoration:underline;cursor:pointer;" onclick="lapLihatTanpaModal()" title="Klik untuk lihat semua barangnya">… dan ${r.barang_tanpa_modal.length - 15} lainnya (klik untuk lihat semua)</a>` : ''}
                 </div>
                 <button class="btn btn-sm" style="margin-top:8px;" onclick="perbaikiHppDariNota(this)">🔧 Perbaiki HPP dari Nota SID</button>
                 <button class="btn btn-sm" style="margin-top:8px;margin-left:6px;" onclick="isiModalDariBeli(this)">📦 Isi dari rata-rata Harga Beli</button>
@@ -470,14 +507,37 @@ async function renderLabaRugi() {
                             <td class="r">${R(r.pendapatan)}</td>
                         </tr>
 
-                        <!-- HPP -->
+                        <!-- HPP (dirinci: persediaan awal + pembelian - persediaan akhir) -->
+                        ${(r.hpp_rincian && !pk) ? (() => {
+                            const h = r.hpp_rincian;
+                            const tersedia = h.persediaan_awal + h.pembelian + h.penyesuaian_lain;
+                            const sub = 'padding-left:28px;';
+                            const sub2 = 'padding-left:44px;';
+                            return `
+                        <tr style="background:var(--kertas);">
+                            <td colspan="2" style="font-weight:700;padding:12px 14px;text-transform:uppercase;font-size:11px;letter-spacing:.06em;color:var(--daun);">
+                                Harga Pokok Penjualan (HPP)
+                            </td>
+                        </tr>
+                        <tr><td style="${sub2}">Persediaan Awal <span style="font-size:11px;color:var(--ink3);">(nilai stok ${f.dari ? 'per ' + esc(fmtTgl(f.dari)) + ' sebelum transaksi' : 'awal'})</span></td><td class="r">${R(h.persediaan_awal)}</td></tr>
+                        <tr><td style="${sub2}">(+) Pembelian <span style="font-size:11px;color:var(--ink3);">(bersih diskon, tanpa PPN Masukan)</span></td><td class="r">${R(h.pembelian)}</td></tr>
+                        ${Math.abs(h.penyesuaian_lain) > 0.5 ? `<tr><td style="${sub2}">(${h.penyesuaian_lain >= 0 ? '+' : '−'}) Penyesuaian lain <span style="font-size:11px;color:var(--ink3);">(retur, barang masuk/keluar, mutasi, stok opname)</span></td><td class="r">${R(Math.abs(h.penyesuaian_lain))}</td></tr>` : ''}
+                        <tr style="font-weight:600;"><td style="${sub}">Barang Tersedia untuk Dijual</td><td class="r">${R(tersedia)}</td></tr>
+                        <tr><td style="${sub2}">(−) Persediaan Akhir <span style="font-size:11px;color:var(--ink3);">(nilai stok ${f.sampai ? 'per ' + esc(fmtTgl(f.sampai)) : 'saat ini'})</span></td><td class="r">(${R(h.persediaan_akhir)})</td></tr>
+                        <tr ${klikAkun('5101', 'Harga Pokok Penjualan', 'Klik untuk lihat rincian transaksi (akun 5101)')} style="font-weight:700;border-top:1px solid var(--brd);">
+                            <td style="${sub};color:var(--red);">Total Harga Pokok Penjualan (HPP)
+                                ${r.hpp === 0 ? '<span style="font-size:11px;color:var(--ylw);"> ⚠ Isi harga modal di Master Barang</span>' : ''}
+                            </td>
+                            <td class="r">(${R(r.hpp)})</td>
+                        </tr>`;
+                        })() : `
                         <tr ${klikAkun('5101', 'Harga Pokok Penjualan', 'Klik untuk lihat rincian transaksi (akun 5101)')}>
                             <td style="padding-left:28px;color:var(--red);">
                                 Harga Pokok Penjualan (HPP)
                                 ${r.hpp === 0 ? '<span style="font-size:11px;color:var(--ylw);"> ⚠ Isi harga modal di Master Barang</span>' : ''}
                             </td>
                             <td class="r">(${R(r.hpp)})</td>
-                        </tr>
+                        </tr>`}
 
                         <!-- Laba Kotor -->
                         <tr class="row-click" style="background:rgba(26,92,56,.06);font-weight:700;border-top:2px solid var(--brd);" title="Klik untuk lihat cara perhitungan"
