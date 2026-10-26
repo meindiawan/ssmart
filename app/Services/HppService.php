@@ -327,10 +327,15 @@ class HppService
     public function hppMapUntukJurnal(string $refTabel, array $refIds): array
     {
         if (empty($refIds)) return [];
-        return DB::table('hpp_kartu')
-            ->where('ref_tabel', $refTabel)->whereIn('ref_id', $refIds)
-            ->where('qty_keluar', '>', 0)
-            ->pluck('nilai_keluar', 'ref_id')->toArray();
+        // Chunk: MySQL membatasi 65.535 placeholder per prepared statement (error 1390).
+        $out = [];
+        foreach (array_chunk(array_values($refIds), 5000) as $chunk) {
+            $out += DB::table('hpp_kartu')
+                ->where('ref_tabel', $refTabel)->whereIn('ref_id', $chunk)
+                ->where('qty_keluar', '>', 0)
+                ->pluck('nilai_keluar', 'ref_id')->toArray();
+        }
+        return $out;
     }
 
     /** Nilai HPP baris MASUK (mis. Retur Jual: barang kembali ke gudang) berdasarkan
@@ -340,10 +345,14 @@ class HppService
     public function hppMasukUntukJurnal(string $refTabel, array $refIds): array
     {
         if (empty($refIds)) return [];
-        return DB::table('hpp_kartu')
-            ->where('ref_tabel', $refTabel)->whereIn('ref_id', $refIds)
-            ->where('qty_masuk', '>', 0)
-            ->pluck('nilai_masuk', 'ref_id')->toArray();
+        $out = [];
+        foreach (array_chunk(array_values($refIds), 5000) as $chunk) {
+            $out += DB::table('hpp_kartu')
+                ->where('ref_tabel', $refTabel)->whereIn('ref_id', $chunk)
+                ->where('qty_masuk', '>', 0)
+                ->pluck('nilai_masuk', 'ref_id')->toArray();
+        }
+        return $out;
     }
 
     /** Nilai persediaan (Rp) yang DIKIRIM pada tiap baris Mutasi (keluar dari
@@ -354,14 +363,20 @@ class HppService
     public function nilaiKirimMutasi(string $refTabel, array $refIds): array
     {
         if (empty($refIds)) return [];
-        return DB::table('hpp_kartu')
-            ->where('ref_tabel', $refTabel)->whereIn('ref_id', $refIds)
-            ->where('qty_keluar', '>', 0)
-            ->get(['ref_id', 'nilai_keluar', 'qty_keluar'])
-            ->mapWithKeys(fn($r) => [$r->ref_id => [
-                'nilai' => (float) $r->nilai_keluar,
-                'satuan' => (float) $r->qty_keluar > 0 ? (float) $r->nilai_keluar / (float) $r->qty_keluar : 0.0,
-            ]])->toArray();
+        $out = [];
+        foreach (array_chunk(array_values($refIds), 5000) as $chunk) {
+            $rows = DB::table('hpp_kartu')
+                ->where('ref_tabel', $refTabel)->whereIn('ref_id', $chunk)
+                ->where('qty_keluar', '>', 0)
+                ->get(['ref_id', 'nilai_keluar', 'qty_keluar']);
+            foreach ($rows as $r) {
+                $out[$r->ref_id] = [
+                    'nilai' => (float) $r->nilai_keluar,
+                    'satuan' => (float) $r->qty_keluar > 0 ? (float) $r->nilai_keluar / (float) $r->qty_keluar : 0.0,
+                ];
+            }
+        }
+        return $out;
     }
 
     /** Nilai (bertanda) Kartu HPP utk baris Opname — dipakai jurnal selisih
@@ -369,11 +384,16 @@ class HppService
     public function hppNilaiOpname(array $refIds): array
     {
         if (empty($refIds)) return [];
-        return DB::table('hpp_kartu')
-            ->where('ref_tabel', 'stok_opname_detail')->whereIn('ref_id', $refIds)
-            ->get()->keyBy('ref_id')
-            ->map(fn($r) => $r->qty_masuk > 0 ? (float) $r->nilai_masuk : -(float) $r->nilai_keluar)
-            ->toArray();
+        $out = [];
+        foreach (array_chunk(array_values($refIds), 5000) as $chunk) {
+            $rows = DB::table('hpp_kartu')
+                ->where('ref_tabel', 'stok_opname_detail')->whereIn('ref_id', $chunk)
+                ->get();
+            foreach ($rows as $r) {
+                $out[$r->ref_id] = $r->qty_masuk > 0 ? (float) $r->nilai_masuk : -(float) $r->nilai_keluar;
+            }
+        }
+        return $out;
     }
 
     /** Deteksi kekurangan Saldo Awal per cabang utk SATU kode barang — dipakai
