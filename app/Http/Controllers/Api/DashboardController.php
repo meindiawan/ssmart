@@ -553,7 +553,7 @@ class DashboardController extends Controller
         // ── Mutasi paket (mutasi_kirim + detail) ──
         $headers = DB::table('mutasi_kirim')->where('status', '!=', 'Dibatalkan')->get();
         if ($headers->isNotEmpty()) {
-            $details = DB::table('mutasi_kirim_detail')->whereIn('mutasi_kirim_id', $headers->pluck('id'))->get()->groupBy('mutasi_kirim_id');
+            $details = collect($headers->pluck('id')->all())->chunk(5000)->flatMap(fn($c) => DB::table('mutasi_kirim_detail')->whereIn('mutasi_kirim_id', $c->values()->all())->get())->groupBy('mutasi_kirim_id');
             $nilaiMap = $hppSvc->nilaiKirimMutasi('mutasi_kirim_detail', $details->flatten()->pluck('id')->all());
 
             foreach ($headers as $h) {
@@ -618,8 +618,8 @@ class DashboardController extends Controller
         $headers = $hq->get();
         if ($headers->isEmpty()) return;
 
-        $details = DB::table('jurnal_manual_detail')->whereIn('jurnal_manual_id', $headers->pluck('id'))
-            ->orderBy('id')->get()->groupBy('jurnal_manual_id');
+        $details = collect($headers->pluck('id')->all())->chunk(5000)->flatMap(fn($c) => DB::table('jurnal_manual_detail')->whereIn('jurnal_manual_id', $c->values()->all())->orderBy('id')->get())
+            ->sortBy('id')->groupBy('jurnal_manual_id');
 
         foreach ($headers as $h) {
             $label = ($h->jenis === 'Memorial' ? 'Memorial' : 'Jurnal Manual') . ($h->kategori ? ' ' . $h->kategori : '');
