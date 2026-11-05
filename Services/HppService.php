@@ -327,15 +327,27 @@ class HppService
         return $q->orderByDesc('tgl')->orderByDesc('urutan')->limit($limit)->get();
     }
 
+    /** MySQL membatasi 65.535 placeholder per query. Dengan data besar (puluhan
+     *  ribu baris penjualan) whereIn('ref_id', semua id) meledak dgn error 1390
+     *  "Prepared statement contains too many placeholders" — jadi SEMUA lookup
+     *  by id di bawah dipecah per 5.000 id. Hasil digabung (key = ref_id). */
+    private function chunkedRows(string $refTabel, array $refIds, callable $mod): array
+    {
+        $out = [];
+        foreach (array_chunk(array_values($refIds), 5000) as $chunk) {
+            $q = DB::table('hpp_kartu')->where('ref_tabel', $refTabel)->whereIn('ref_id', $chunk);
+            foreach ($mod($q)->get() as $r) $out[$r->ref_id] = $r;
+        }
+        return $out;
+    }
+
     /** Cari nilai HPP (total, bukan per satuan) sebuah baris keluar berdasarkan
      *  tabel & id sumbernya — dipakai DashboardController::buildJurnal. */
     public function hppMapUntukJurnal(string $refTabel, array $refIds): array
     {
         if (empty($refIds)) return [];
-        return DB::table('hpp_kartu')
-            ->where('ref_tabel', $refTabel)->whereIn('ref_id', $refIds)
-            ->where('qty_keluar', '>', 0)
-            ->pluck('nilai_keluar', 'ref_id')->toArray();
+        $rows = $this->chunkedRows($refTabel, $refIds, fn($q) => $q->where('qty_keluar', '>', 0)->select('ref_id', 'nilai_keluar'));
+        return array_map(fn($r) => $r->nilai_keluar, $rows);
     }
 
     /** Nilai HPP baris MASUK (mis. Retur Jual: barang kembali ke gudang) berdasarkan
@@ -345,10 +357,8 @@ class HppService
     public function hppMasukUntukJurnal(string $refTabel, array $refIds): array
     {
         if (empty($refIds)) return [];
-        return DB::table('hpp_kartu')
-            ->where('ref_tabel', $refTabel)->whereIn('ref_id', $refIds)
-            ->where('qty_masuk', '>', 0)
-            ->pluck('nilai_masuk', 'ref_id')->toArray();
+        $rows = $this->chunkedRows($refTabel, $refIds, fn($q) => $q->where('qty_masuk', '>', 0)->select('ref_id', 'nilai_masuk'));
+        return array_map(fn($r) => $r->nilai_masuk, $rows);
     }
 
     /** Nilai persediaan (Rp) yang DIKIRIM pada tiap baris Mutasi (keluar dari
@@ -359,14 +369,11 @@ class HppService
     public function nilaiKirimMutasi(string $refTabel, array $refIds): array
     {
         if (empty($refIds)) return [];
-        return DB::table('hpp_kartu')
-            ->where('ref_tabel', $refTabel)->whereIn('ref_id', $refIds)
-            ->where('qty_keluar', '>', 0)
-            ->get(['ref_id', 'nilai_keluar', 'qty_keluar'])
-            ->mapWithKeys(fn($r) => [$r->ref_id => [
-                'nilai' => (float) $r->nilai_keluar,
-                'satuan' => (float) $r->qty_keluar > 0 ? (float) $r->nilai_keluar / (float) $r->qty_keluar : 0.0,
-            ]])->toArray();
+        $rows = $this->chunkedRows($refTabel, $refIds, fn($q) => $q->where('qty_keluar', '>', 0)->select('ref_id', 'nilai_keluar', 'qty_keluar'));
+        return array_map(fn($r) => [
+            'nilai' => (float) $r->nilai_keluar,
+            'satuan' => (float) $r->qty_keluar > 0 ? (float) $r->nilai_keluar / (float) $r->qty_keluar : 0.0,
+        ], $rows);
     }
 
     /** Nilai (bertanda) Kartu HPP utk baris Opname — dipakai jurnal selisih
@@ -374,11 +381,8 @@ class HppService
     public function hppNilaiOpname(array $refIds): array
     {
         if (empty($refIds)) return [];
-        return DB::table('hpp_kartu')
-            ->where('ref_tabel', 'stok_opname_detail')->whereIn('ref_id', $refIds)
-            ->get()->keyBy('ref_id')
-            ->map(fn($r) => $r->qty_masuk > 0 ? (float) $r->nilai_masuk : -(float) $r->nilai_keluar)
-            ->toArray();
+        $rows = $this->chunkedRows('stok_opname_detail', $refIds, fn($q) => $q);
+        return array_map(fn($r) => $r->qty_masuk > 0 ? (float) $r->nilai_masuk : -(float) $r->nilai_keluar, $rows);
     }
 
     /** Deteksi kekurangan Saldo Awal per cabang utk SATU kode barang — dipakai

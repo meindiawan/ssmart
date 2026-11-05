@@ -5,9 +5,14 @@ Timpa file sesuai foldernya, lalu jalankan SEKALI di folder proyek:
 
 (wajib — aturan HPP berubah, jadi Kartu HPP harus dihitung ulang), lalu Ctrl+F5 di browser.
 
-1. Buka di tab baru: ikon ↗ di tiap menu samping (muncul saat di-hover), Ctrl/Cmd/Shift + klik atau klik tengah
-   pada menu & sub-menu, dan tombol "↗ Tab Baru" di topbar. URL kini ikut berubah (#transaksi/beli?cabang=...),
-   jadi bisa di-copy / bookmark / refresh tetap di halaman yang sama.
+1. TAB BARU di dalam aplikasi: deretan tab di bawah topbar (seperti tab browser). "＋ Tab Baru" / tombol ＋ menggandakan halaman
+   yang sedang dibuka; ikon ↗ di menu samping (hover), atau Ctrl/Cmd/Shift + klik / klik tengah pada menu & sub-menu membuka
+   halaman itu di tab baru. Klik tab = pindah, × = tutup. Tiap tab ingat menu, sub-menu, cabang & posisi scroll, dan tetap ada
+   setelah refresh. Pintasan: Ctrl+Alt+T (tab baru), Ctrl+Alt+W (tutup). Maks 12 tab.
+   Pindah antar tab TIDAK memuat ulang: isi halaman (termasuk isian form & scroll) disimpan di memori dan dipasang lagi instan.
+   Data di tab yang tersimpan tidak otomatis ter-update kalau ada perubahan di tab lain → klik ↻ di deretan tab untuk muat ulang.
+   Kasir POS selalu dimuat ulang saat dibuka.
+1b. FIX error "Prepared statement contains too many placeholders" di Dashboard/Laba Rugi: lookup HPP per id dipecah per 5.000.
 2. HPP (HppService): penjualan SEBELUM barang itu dibeli, dan penjualan di cabang yang BELUM membeli barang itu,
    sekarang HPP = Rp 0 (dulu diisi memakai pembelian tanggal berikutnya / cabang lain, sehingga daftar "HPP Rp 0" terlalu kecil).
    Bisa dikembalikan lewat konstanta PAKAI_PEMBELIAN_TERAWAL & PAKAI_HARGA_BELI_CABANG_LAIN.

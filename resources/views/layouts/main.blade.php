@@ -46,6 +46,9 @@
     {{-- TOPBAR --}}
     @include('partials.topbar')
 
+    {{-- TAB HALAMAN (multi-tab di dalam aplikasi) — diisi nav.js --}}
+    <div class="ptabs no-print" id="pageTabs" role="tablist"></div>
+
     {{-- KONTEN HALAMAN --}}
     <div class="content">
       <div class="pw">
