@@ -2155,6 +2155,10 @@ class TransaksiController extends Controller
         // supaya langsung muncul di Master Barang cabang tsb.
         \App\Services\BarangCabangService::daftarkanDariTransaksi(array_column($berhasil, 'kode_barang'));
 
+        // Kartu HPP hanya membaca barang yang ada di Master → bangun ulang supaya
+        // pembelian/penjualan lama barang-barang ini langsung ikut HPP & Laba Rugi.
+        foreach (array_column($berhasil, 'kode_barang') as $kb) app(\App\Services\HppService::class)->rebuildItem((string) $kb);
+
         return response()->json([
             'message'  => count($berhasil) . ' barang berhasil dimasukkan ke Master Barang, ' . count($gagal) . ' dilewati.',
             'berhasil' => $berhasil,
@@ -2167,6 +2171,7 @@ class TransaksiController extends Controller
     public function cocokkanBarangTidakTerdeteksi()
     {
         $r = \App\Services\BarangCabangService::cocokkanTransaksiTidakDikenal();
+        $r['kartu_hpp_dibangun_ulang'] = app(\App\Services\HppService::class)->rebuildYangTertinggal();
         $r['message'] = "{$r['dialihkan_ke_kode_master']} kode dicocokkan ke kode utama barang, "
             . "{$r['flag_dibersihkan']} baris dibersihkan dari tanda ⚠️, "
             . count($r['ambigu']) . " kode ambigu dilewati, {$r['masih_tidak_ada']} kode memang belum ada di Master Barang.";

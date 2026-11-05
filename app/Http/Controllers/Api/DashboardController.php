@@ -649,11 +649,29 @@ class DashboardController extends Controller
         return ['tgl' => $tgl, 'cab' => $cab, 'ref' => $ref, 'ket' => $ket, 'akun' => $akun, 'D' => round($D), 'K' => round($K)];
     }
 
+    /** Total D & K per akun — dihitung SEKALI per jurnal lalu di-cache (1 slot). Dulu
+     *  setiap balAkun() menyaring SELURUH jurnal (O(jumlah akun × jumlah baris jurnal)),
+     *  itulah yang membuat Dashboard/Laba Rugi/Neraca lemot begitu data banyak. */
+    private ?array $aggSumber = null;
+    private array $aggHasil = [];
+    private function aggPerAkun(array $jurnal): array
+    {
+        // `===` pada array yang SAMA (instance sama) O(1) di PHP.
+        if ($this->aggSumber !== null && $this->aggSumber === $jurnal) return $this->aggHasil;
+        $agg = [];
+        foreach ($jurnal as $x) {
+            $k = (string) $x['akun'];
+            if (!isset($agg[$k])) $agg[$k] = [0.0, 0.0];
+            $agg[$k][0] += $x['D']; $agg[$k][1] += $x['K'];
+        }
+        $this->aggSumber = $jurnal; $this->aggHasil = $agg;
+        return $agg;
+    }
+
     public function balAkun(array $jurnal, string $kode, string $normal): float
     {
-        $D = array_sum(array_column(array_filter($jurnal, fn($x) => $x['akun'] === $kode), 'D'));
-        $K = array_sum(array_column(array_filter($jurnal, fn($x) => $x['akun'] === $kode), 'K'));
-        return $normal === 'D' ? $D - $K : $K - $D;
+        $a = $this->aggPerAkun($jurnal)[$kode] ?? [0.0, 0.0];
+        return $normal === 'D' ? $a[0] - $a[1] : $a[1] - $a[0];
     }
 
     public function calcLabaRugi(array $jurnal): array
@@ -676,9 +694,7 @@ class DashboardController extends Controller
             if ($akun->kat === 'Pendapatan') {
                 $pendapatan += $this->balAkun($jurnal, $kodeStr, 'K');
             } elseif ($kodeStr === '5101') {
-                $D = array_sum(array_column(array_filter($jurnal, fn($x) => $x['akun'] === '5101'), 'D'));
-                $K = array_sum(array_column(array_filter($jurnal, fn($x) => $x['akun'] === '5101'), 'K'));
-                $hpp = $D - $K;
+                $hpp = $this->balAkun($jurnal, '5101', 'D');
             } elseif ($akun->kat === 'Beban' && $kodeStr !== '5101') {
                 $beban += $this->balAkun($jurnal, $kodeStr, 'D');
             }
@@ -799,8 +815,7 @@ class DashboardController extends Controller
 
         $rows = [];
         foreach ($coaAll as $akun) {
-            $D = array_sum(array_column(array_filter($jurnal, fn($j) => $j['akun'] === $akun->kode), 'D'));
-            $K = array_sum(array_column(array_filter($jurnal, fn($j) => $j['akun'] === $akun->kode), 'K'));
+            [$D, $K] = $this->aggPerAkun($jurnal)[(string) $akun->kode] ?? [0.0, 0.0];
             if ($D > 0 || $K > 0) {
                 $rows[] = ['kode' => $akun->kode, 'nama' => $akun->nama, 'kat' => $akun->kat, 'D' => $D, 'K' => $K];
             }
@@ -858,7 +873,8 @@ class DashboardController extends Controller
         $jurnal = $this->buildJurnal($cabang, $dari, $sampai, $shift ?: null, $kasir ?: null);
         $lr     = $this->calcLabaRugi($jurnal);
         $coaAll = DB::table('coa')->get();
-        $tanpaModal = $perKasir ? [] : $this->barangTanpaModal($cabang, $dari, $sampai); // daftar lengkap (bukan cuma 50)
+        $tanpaHpp   = $perKasir ? null : $this->penjualanTanpaHpp($cabang, $dari, $sampai);
+        $tanpaModal = $tanpaHpp ? $tanpaHpp['items'] : []; // daftar lengkap (bukan cuma 50)
 
         $pendRows = [];
         $bebanRows = [];
@@ -879,6 +895,13 @@ class DashboardController extends Controller
             // laporan keseluruhan, bukan per shift/kasir — dikosongkan di mode itu.
             'hpp_rincian'               => $perKasir ? null : $this->hppRincian($cabang, $dari, $sampai, (float) $lr['hpp']),
             'barang_tanpa_modal'        => $tanpaModal,
+            // Rekonsiliasi Penjualan (DPP, basis sama dgn Pendapatan): bagian yang
+            // BELUM tertutup pembelian (HPP 0) vs yang sudah punya HPP dari pembelian.
+            'penjualan_tanpa_hpp'       => $tanpaHpp ? [
+                'dpp_tanpa_hpp' => $tanpaHpp['total_tanpa_hpp'],
+                'dpp_ada_hpp'   => $tanpaHpp['total_semua'] - $tanpaHpp['total_tanpa_hpp'],
+                'dpp_semua'     => $tanpaHpp['total_semua'],
+            ] : null,
             'barang_tidak_terdeteksi'   => $perKasir ? ['jumlah_kode' => 0, 'omzet' => 0] : $this->barangTidakTerdeteksiRingkas($cabang, $dari, $sampai),
             'filter_shift'              => $shift ?: null,
             'filter_kasir'              => $kasir ?: null,
@@ -936,17 +959,37 @@ class DashboardController extends Controller
         $awal  = $dari ? $nilaiPersediaan($dari, false) : 0.0;
         $akhir = $nilaiPersediaan($sampai ?: null, true);
 
-        $q = DB::table('hpp_kartu')->where('tipe', 'Pembelian');
-        if ($cabang) $q->where('cabang', $cabang);
-        if ($dari)   $q->where('tgl', '>=', $dari);
-        if ($sampai) $q->where('tgl', '<=', $sampai);
-        $pembelian = (float) $q->sum('nilai_masuk');
+        // PEMBELIAN diambil langsung dari tabel Pembelian (trx_beli) dgn rumus yang
+        // SAMA dengan jurnal (Dr 1105 Persediaan): qty × harga − diskon, lalu PPN
+        // Masukan dikeluarkan. Dulu diambil dari Kartu HPP (tanpa diskon, hanya
+        // baris yang kodenya ada di Master Barang & harga > 0) sehingga angkanya
+        // beda dengan total di menu Transaksi ▸ Pembelian. Rekonsiliasinya:
+        //   Total menu Pembelian (faktur) − PPN Masukan − pembelian tanpa Master Barang
+        //   = Pembelian (DPP) di Laba Rugi.
+        $tarif = $this->getTarif();
+        $bq = DB::table('trx_beli')->leftJoin('barang', 'trx_beli.kode_barang', '=', 'barang.kode');
+        if ($cabang) $bq->where('trx_beli.cabang', $cabang);
+        if ($dari)   $bq->where('trx_beli.tgl', '>=', $dari);
+        if ($sampai) $bq->where('trx_beli.tgl', '<=', $sampai);
+        $tot = "(trx_beli.qty * trx_beli.harga - COALESCE(trx_beli.diskon,0))";
+        $kena = "COALESCE(NULLIF(trx_beli.ppn,''), barang.ppn) = 'Kena PPN'";
+        $b = $bq->selectRaw(
+            "COALESCE(SUM($tot),0) AS faktur,
+             COALESCE(SUM(CASE WHEN barang.kode IS NULL THEN $tot ELSE 0 END),0) AS tak_terdeteksi,
+             COALESCE(SUM(CASE WHEN barang.kode IS NOT NULL AND $kena THEN $tot - $tot / (1 + ?) ELSE 0 END),0) AS ppn",
+            [$tarif]
+        )->first();
+        $faktur = (float) $b->faktur; $tak = (float) $b->tak_terdeteksi; $ppnMasukan = (float) $b->ppn;
+        $pembelian = $faktur - $tak - $ppnMasukan;
 
         $lain = $hppJurnal - ($awal + $pembelian - $akhir);
 
         return [
             'persediaan_awal'  => round($awal),
             'pembelian'        => round($pembelian),
+            'pembelian_faktur'          => round($faktur),          // = total di menu Pembelian (termasuk PPN)
+            'pembelian_ppn_masukan'     => round($ppnMasukan),
+            'pembelian_tak_terdeteksi'  => round($tak),             // kode barang tidak ada di Master Barang
             'penyesuaian_lain' => round($lain),
             'persediaan_akhir' => round($akhir),
             'hpp'              => round($hppJurnal),
@@ -961,24 +1004,82 @@ class DashboardController extends Controller
     // gampang ditelusuri & diperbaiki.
     public function barangTanpaModal(?string $cabang = null, ?string $dari = null, ?string $sampai = null): array
     {
-        // Barang terjual yang HPP-nya 0 karena BELUM ADA PEMBELIAN (Kartu HPP).
+        return $this->penjualanTanpaHpp($cabang, $dari, $sampai)['items'];
+    }
+
+    /**
+     * Penjualan yang HPP-nya 0 / belum tertutup pembelian, dalam basis DPP (SAMA
+     * dengan Pendapatan di Laba Rugi: qty × harga − diskon, PPN Keluaran dikeluarkan).
+     * Dulu "omzet" di daftar ini = qty × harga (kotor, termasuk PPN, tanpa diskon)
+     * sehingga tidak bisa dibandingkan langsung dengan Pendapatan.
+     *
+     * Baris yang HPP-nya hanya SEBAGIAN tertutup stok pembelian (jual melebihi stok)
+     * ikut dihitung untuk bagian yang tidak tertutup saja (qty & DPP proporsional).
+     * Return: items (maks 3.000, urut DPP terbesar), total_tanpa_hpp, total_semua.
+     */
+    public function penjualanTanpaHpp(?string $cabang = null, ?string $dari = null, ?string $sampai = null): array
+    {
+        $tarif = $this->getTarif();
         $q = DB::table('trx_jual')
             ->join('barang', 'trx_jual.kode_barang', '=', 'barang.kode')
             ->leftJoin('hpp_kartu', function ($j) {
                 $j->on('hpp_kartu.ref_id', '=', 'trx_jual.id')->where('hpp_kartu.ref_tabel', '=', 'trx_jual');
-            })
-            ->where(fn($w) => $w->whereNull('hpp_kartu.id')->orWhere('hpp_kartu.nilai_keluar', '<=', 0));
+            });
         if ($cabang) $q->where('trx_jual.cabang', $cabang);
         if ($dari)   $q->where('trx_jual.tgl', '>=', $dari);
         if ($sampai) $q->where('trx_jual.tgl', '<=', $sampai);
 
-        return $q->selectRaw('barang.kode, barang.nama, SUM(trx_jual.qty) as qty_terjual, SUM(trx_jual.qty*trx_jual.harga) as omzet')
-            ->groupBy('barang.kode', 'barang.nama')
-            ->orderByDesc('omzet')
-            ->limit(3000)
-            ->get()
-            ->map(fn($r) => ['kode' => $r->kode, 'nama' => $r->nama, 'qty_terjual' => (float)$r->qty_terjual, 'omzet' => (float)$r->omzet])
-            ->toArray();
+        // Total penjualan DPP: dihitung langsung di SQL (tanpa melooping semua baris di PHP).
+        $totSemua = (float) (clone $q)->selectRaw(
+            "COALESCE(SUM(ROUND(CASE WHEN COALESCE(NULLIF(trx_jual.ppn,''), barang.ppn) = 'Kena PPN'
+                THEN (trx_jual.qty * trx_jual.harga - COALESCE(trx_jual.diskon,0)) / (1 + ?)
+                ELSE (trx_jual.qty * trx_jual.harga - COALESCE(trx_jual.diskon,0)) END)),0) AS t", [$tarif]
+        )->value('t');
+
+        // Hanya baris KANDIDAT (HPP kosong/0 atau tertutup sebagian) yang dibaca ke PHP.
+        $q->where(function ($w) {
+            $w->whereNull('hpp_kartu.id')->orWhere('hpp_kartu.nilai_keluar', '<=', 0)
+              ->orWhereRaw('hpp_kartu.nilai_keluar < hpp_kartu.qty_keluar * hpp_kartu.saldo_hpp_sebelum * 0.999');
+        });
+        $q->select('barang.kode', 'barang.nama', 'trx_jual.qty', 'trx_jual.harga', 'trx_jual.diskon',
+            'trx_jual.ppn', 'barang.ppn as ppn_master',
+            'hpp_kartu.nilai_keluar', 'hpp_kartu.qty_keluar', 'hpp_kartu.saldo_hpp_sebelum');
+
+        $per = [];
+        $totTanpa = 0.0;
+        foreach ($q->cursor() as $r) {
+            $kena = ($r->ppn ?: $r->ppn_master) === 'Kena PPN';
+            $tot  = (float) $r->qty * (float) $r->harga - (float) ($r->diskon ?? 0);
+            $dpp  = round($kena ? $tot / (1 + $tarif) : $tot);   // pembulatan per baris = jurnal/Laba Rugi Lengkap
+
+            $nilai = (float) ($r->nilai_keluar ?? 0);
+            if ($nilai <= 0) {
+                $f = 1.0;                                         // sama sekali belum tertutup pembelian
+            } else {
+                $f = 0.0;
+                $hppSblm = (float) ($r->saldo_hpp_sebelum ?? 0);
+                $qk = (float) ($r->qty_keluar ?? 0);
+                if ($hppSblm > 0 && $qk > 0) {                    // tertutup sebagian (jual > stok pembelian)
+                    $f = 1 - min(1.0, $nilai / ($hppSblm * $qk));
+                    if ($f < 0.001) $f = 0.0;
+                }
+            }
+            if ($f <= 0) continue;
+
+            $k = $r->kode;
+            if (!isset($per[$k])) $per[$k] = ['kode' => $k, 'nama' => $r->nama, 'qty_terjual' => 0.0, 'omzet' => 0.0];
+            $per[$k]['qty_terjual'] += (float) $r->qty * $f;
+            $per[$k]['omzet']       += $dpp * $f;
+            $totTanpa               += $dpp * $f;
+        }
+
+        usort($per, fn($a, $b) => $b['omzet'] <=> $a['omzet']);
+        $items = array_map(fn($x) => [
+            'kode' => $x['kode'], 'nama' => $x['nama'],
+            'qty_terjual' => round($x['qty_terjual'], 2), 'omzet' => round($x['omzet']),
+        ], array_slice($per, 0, 3000));
+
+        return ['items' => $items, 'total_tanpa_hpp' => round($totTanpa), 'total_semua' => round($totSemua)];
     }
 
     public function neraca(Request $request)

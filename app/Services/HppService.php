@@ -67,7 +67,7 @@ class HppService
     /** true = kalau cabang itu belum punya biaya sendiri tapi barangnya
      *  pernah dibeli (di cabang mana pun, tanggal ≤ penjualan), pakai harga
      *  beli terakhir itu. false = ketat per cabang (belum beli di cabang itu = 0). */
-    public const PAKAI_HARGA_BELI_CABANG_LAIN = true;
+    public const PAKAI_HARGA_BELI_CABANG_LAIN = false;
 
     /** true = kalau barang itu PERNAH dibeli (tanggal berapa pun) tapi penjualannya
      *  terjadi SEBELUM pembelian pertama, HPP penjualan itu memakai rata-rata
@@ -76,7 +76,19 @@ class HppService
      *  penjualan sebelumnya (rata-rata tetap berjalan menurut urutan tanggal).
      *  false = penjualan sebelum pembelian pertama → HPP 0. Barang yang SAMA
      *  SEKALI belum pernah dibeli selalu HPP 0, apa pun nilai konstanta ini. */
-    public const PAKAI_PEMBELIAN_TERAWAL = true;
+    public const PAKAI_PEMBELIAN_TERAWAL = false;
+
+    /** true = kalau stok hasil pembelian sudah habis (atau saldo di-nol-kan karena
+     *  jual melebihi stok), penjualan berikutnya memakai rata-rata TERAKHIR.
+     *  false (default) = penjualan yang TIDAK tertutup stok hasil pembelian HPP-nya 0. */
+    public const PAKAI_HPP_TERAKHIR_SAAT_HABIS = false;
+
+    /** true (default) = HPP baris keluar HANYA dihitung untuk qty yang benar-benar
+     *  tertutup stok hasil pembelian (sampai tanggal itu, di cabang itu). Sisa qty
+     *  yang melebihi stok → HPP 0 (muncul di daftar "HPP Rp 0"). Dulu seluruh qty
+     *  diberi HPP begitu saldo > 0, sehingga penjualan jauh melebihi pembelian
+     *  tetap terlihat "punya HPP". */
+    public const KELUAR_HANYA_YANG_TERSEDIA = true;
 
     /** Harga masuk utk sebuah event masuk. Return null = tidak ada basis
      *  biaya (tidak ikut dicatat di Kartu HPP). $lastBeli diisi kalau event
@@ -110,7 +122,7 @@ class HppService
     {
         if (!self::HANYA_DARI_PEMBELIAN && isset($e['harga_override'])) return (float) $e['harga_override'];
         if ($hppSebelum > 0) return $hppSebelum;
-        if ($lastHpp !== null && $lastHpp > 0) return $lastHpp;
+        if (self::PAKAI_HPP_TERAKHIR_SAAT_HABIS && $lastHpp !== null && $lastHpp > 0) return $lastHpp;
         if (self::PAKAI_HARGA_BELI_CABANG_LAIN && $lastBeli !== null && $lastBeli > 0) return $lastBeli;
         // Belum ada pembelian SEBELUM penjualan ini, tapi barangnya pernah dibeli
         // di tanggal lain → pakai rata-rata pembelian terawal (bukan 0).
@@ -216,7 +228,10 @@ class HppService
                 $qty = (float) $e['qty'];
                 // HPP = rata-rata hasil PEMBELIAN. Belum ada pembelian → 0.
                 $hppPakai = $this->hargaKeluar($e, $hppSebelum, $lastHpp[$cab] ?? null, $lastBeli, $beliAwal[$cab] ?? ($beliAwal['*'] ?? null));
-                $nilaiKeluar = $qty * $hppPakai;
+                $tersedia = $before['qty'] > 0.0001 ? $before['qty'] : 0.0;
+                // Hanya qty yang tertutup stok hasil pembelian yang diberi HPP.
+                $qtyBernilai = (self::KELUAR_HANYA_YANG_TERSEDIA && $hppSebelum > 0) ? min($qty, $tersedia) : $qty;
+                $nilaiKeluar = $qtyBernilai * $hppPakai;
 
                 if ($before['qty'] > 0.0001 && $qty < $before['qty'] - 0.0001) {
                     $newQty = $before['qty'] - $qty;
@@ -263,6 +278,30 @@ class HppService
                 'updated_at' => now(),
             ]);
         }
+    }
+
+    /** Bangun ulang Kartu HPP semua barang yang transaksinya (Penjualan/Pembelian)
+     *  BELUM punya baris di Kartu HPP — terjadi kalau kode barangnya baru didaftarkan
+     *  ke Master Barang / dicocokkan ke kode utama SESUDAH transaksinya diinput
+     *  (Kartu HPP hanya membaca transaksi yang kodenya ada di Master Barang).
+     *  Murah: hanya menyentuh kode yang memang tertinggal. */
+    public function rebuildYangTertinggal(): int
+    {
+        $kode = collect();
+        foreach (['trx_jual', 'trx_beli'] as $tbl) {
+            $kode = $kode->merge(
+                DB::table($tbl)
+                    ->join('barang', $tbl . '.kode_barang', '=', 'barang.kode')
+                    ->whereNotExists(function ($s) use ($tbl) {
+                        $s->select(DB::raw(1))->from('hpp_kartu')
+                            ->whereColumn('hpp_kartu.ref_id', $tbl . '.id')->where('hpp_kartu.ref_tabel', $tbl);
+                    })
+                    ->distinct()->pluck($tbl . '.kode_barang')
+            );
+        }
+        $kode = $kode->filter()->unique()->values();
+        foreach ($kode as $k) $this->rebuildItem((string) $k);
+        return $kode->count();
     }
 
     /** Bangun ulang SEMUA barang yang pernah punya pergerakan stok. Dipakai untuk
@@ -327,10 +366,11 @@ class HppService
     public function hppMapUntukJurnal(string $refTabel, array $refIds): array
     {
         if (empty($refIds)) return [];
-        return DB::table('hpp_kartu')
-            ->where('ref_tabel', $refTabel)->whereIn('ref_id', $refIds)
-            ->where('qty_keluar', '>', 0)
-            ->pluck('nilai_keluar', 'ref_id')->toArray();
+        $q = DB::table('hpp_kartu')->where('ref_tabel', $refTabel)->where('qty_keluar', '>', 0);
+        // Daftar id besar (puluhan ribu) → jangan bikin WHERE IN raksasa (lambat/bisa error);
+        // cukup ambil semua baris tabel itu, pemakai membaca per-kunci id.
+        if (count($refIds) <= 1000) $q->whereIn('ref_id', $refIds);
+        return $q->pluck('nilai_keluar', 'ref_id')->toArray();
     }
 
     /** Nilai HPP baris MASUK (mis. Retur Jual: barang kembali ke gudang) berdasarkan
@@ -340,10 +380,9 @@ class HppService
     public function hppMasukUntukJurnal(string $refTabel, array $refIds): array
     {
         if (empty($refIds)) return [];
-        return DB::table('hpp_kartu')
-            ->where('ref_tabel', $refTabel)->whereIn('ref_id', $refIds)
-            ->where('qty_masuk', '>', 0)
-            ->pluck('nilai_masuk', 'ref_id')->toArray();
+        $q = DB::table('hpp_kartu')->where('ref_tabel', $refTabel)->where('qty_masuk', '>', 0);
+        if (count($refIds) <= 1000) $q->whereIn('ref_id', $refIds);
+        return $q->pluck('nilai_masuk', 'ref_id')->toArray();
     }
 
     /** Nilai persediaan (Rp) yang DIKIRIM pada tiap baris Mutasi (keluar dari
@@ -369,9 +408,9 @@ class HppService
     public function hppNilaiOpname(array $refIds): array
     {
         if (empty($refIds)) return [];
-        return DB::table('hpp_kartu')
-            ->where('ref_tabel', 'stok_opname_detail')->whereIn('ref_id', $refIds)
-            ->get()->keyBy('ref_id')
+        $q = DB::table('hpp_kartu')->where('ref_tabel', 'stok_opname_detail');
+        if (count($refIds) <= 1000) $q->whereIn('ref_id', $refIds);
+        return $q->get()->keyBy('ref_id')
             ->map(fn($r) => $r->qty_masuk > 0 ? (float) $r->nilai_masuk : -(float) $r->nilai_keluar)
             ->toArray();
     }
@@ -431,7 +470,9 @@ class HppService
                 if ($qty < $tersedia - 0.0001) {
                     $saldo[$cab] = ['qty' => $before['qty'] - $qty, 'nilai' => $before['nilai'] - $qty * $hppSebelum];
                 } else {
-                    if ($hppPakai > 0) {
+                    // Dengan KELUAR_HANYA_YANG_TERSEDIA, bagian yang melebihi stok TIDAK
+                    // diberi HPP → tidak mengkredit Persediaan → tidak ada kekurangan.
+                    if ($hppPakai > 0 && !self::KELUAR_HANYA_YANG_TERSEDIA) {
                         $lebih = $qty - $tersedia;
                         $kurang[$cab]['qty'] += $lebih;
                         $kurang[$cab]['nilai'] += $lebih * $hppPakai;
@@ -542,7 +583,7 @@ class HppService
     }
 
     // ─── Kumpulkan seluruh event pergerakan 1 kode barang, siap-urut ──────
-    private function gatherEvents(string $kodeBarang)
+    protected function gatherEvents(string $kodeBarang)
     {
         $events = collect();
 
@@ -564,7 +605,11 @@ class HppService
                 // yang masuk faktur (termasuk PPN Masukan) di-DPP-kan dulu supaya
                 // HPP TIDAK ikut naik gara-gara pajak yang bisa dikreditkan.
                 $kena  = ($r->ppn ?: $r->ppn_master) === 'Kena PPN';
-                $harga = $kena ? (float) $r->harga / (1 + $tarif) : (float) $r->harga;
+                // Nilai pembelian = qty × harga − diskon (sama dgn buildJurnal), baru
+                // di-DPP-kan; dibagi qty jadi harga satuan efektif.
+                $tot   = (float) $r->qty * (float) $r->harga - (float) ($r->diskon ?? 0);
+                $dpp   = $kena ? $tot / (1 + $tarif) : $tot;
+                $harga = (float) $r->qty > 0 ? $dpp / (float) $r->qty : (float) $r->harga;
                 $events->push(['tgl' => $r->tgl, 'rank' => $RANK_BELI, 'id' => $r->id, 'arah' => 'masuk',
                     'cabang' => $r->cabang, 'qty' => (float) $r->qty, 'harga' => $harga,
                     'tipe' => 'Pembelian', 'ref_tabel' => 'trx_beli', 'ref_id' => $r->id,

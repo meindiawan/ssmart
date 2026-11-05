@@ -80,7 +80,8 @@ function pageScrollTo(where) {
     document.getElementById('app').style.display    = 'flex';
 
     // Step 3: render tab awal (dashboard)
-    await setTab('dashboard');
+    // Dibuka lewat "Buka di tab baru" (?dl=...) → langsung ke menu & rincian asalnya
+    if (!(window.jalankanDeepLink && await window.jalankanDeepLink())) await setTab('dashboard');
 
     // Step 4: tampilkan peringatan jika gagal koneksi
     if (!ok) {
