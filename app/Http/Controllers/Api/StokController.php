@@ -78,6 +78,21 @@ class StokController extends Controller
         ];
     }
 
+    // Nilai persediaan per (barang, cabang) = saldo nilai TERAKHIR di Kartu HPP.
+    // Sama persis dengan sumber "Persediaan Akhir" di Laba Rugi, dan mengikuti aturan
+    // HPP hanya dari Pembelian: barang yang belum pernah dibeli = nilai Rp 0
+    // (BUKAN qty × Harga Modal di Master Barang seperti sebelumnya).
+    private function joinNilaiKartu($q)
+    {
+        $sub = "(SELECT hk.kode_barang, hk.cabang, hk.saldo_nilai FROM hpp_kartu hk
+                 WHERE hk.id = (SELECT h2.id FROM hpp_kartu h2
+                                WHERE h2.kode_barang = hk.kode_barang AND h2.cabang = hk.cabang
+                                ORDER BY h2.tgl DESC, h2.urutan DESC, h2.id DESC LIMIT 1)) kv";
+        return $q->leftJoin(DB::raw($sub), function ($j) {
+            $j->on('kv.kode_barang', '=', 'stok.kode_barang')->on('kv.cabang', '=', 'stok.cabang');
+        });
+    }
+
     // ─── GET STOK ────────────────────────────────────────────────
     // Kartu Stok Semua Barang: bisa diurutkan (default nama A-Z) —
     // 'sort' menerima: nama (default), qty_asc (qty paling sedikit dulu,
@@ -89,7 +104,9 @@ class StokController extends Controller
             ->join('barang', 'stok.kode_barang', '=', 'barang.kode')
             ->select('stok.*', 'barang.nama', 'barang.satuan1', 'barang.satuan2',
                      'barang.harga_jual', 'barang.modal', 'barang.stok_min', 'barang.stok_max',
-                     'barang.kategori', 'barang.ppn');
+                     'barang.kategori', 'barang.ppn',
+                     DB::raw('COALESCE(kv.saldo_nilai, 0) AS nilai_kartu'));
+        $this->joinNilaiKartu($q);
 
         if ($cab = $request->get('cabang')) $q->where('stok.cabang', $cab);
         if ($s   = $request->get('search')) {
@@ -103,8 +120,8 @@ class StokController extends Controller
         switch ($request->get('sort')) {
             case 'qty_asc':   $q->orderBy('stok.qty', 'asc');  break;
             case 'qty_desc':  $q->orderBy('stok.qty', 'desc'); break;
-            case 'nilai_desc':$q->orderByRaw('(stok.qty * barang.modal) desc'); break;
-            case 'nilai_asc': $q->orderByRaw('(stok.qty * barang.modal) asc');  break;
+            case 'nilai_desc':$q->orderByRaw('COALESCE(kv.saldo_nilai, 0) desc'); break;
+            case 'nilai_asc': $q->orderByRaw('COALESCE(kv.saldo_nilai, 0) asc');  break;
             default:          $q->orderBy('barang.nama');
         }
 
@@ -114,7 +131,7 @@ class StokController extends Controller
         // Tambah flag stok rendah
         $list = $list->map(function($item) {
             $item->stok_rendah = $item->stok_min > 0 && $item->qty <= $item->stok_min;
-            $item->nilai_stok  = $item->qty * $item->modal;
+            $item->nilai_stok  = (float) $item->nilai_kartu; // Kartu HPP (hanya dari Pembelian); belum ada pembelian = 0
             return $item;
         });
 
@@ -130,8 +147,9 @@ class StokController extends Controller
             ->select('stok.kode_barang', 'barang.nama', 'barang.satuan1', 'barang.modal',
                      'barang.stok_min', 'barang.kategori',
                      DB::raw('SUM(stok.qty) as qty_total'),
-                     DB::raw('SUM(stok.qty * barang.modal) as nilai_total'))
+                     DB::raw('SUM(COALESCE(kv.saldo_nilai, 0)) as nilai_total'))
             ->groupBy('stok.kode_barang','barang.nama','barang.satuan1','barang.modal','barang.stok_min','barang.kategori');
+        $this->joinNilaiKartu($q);
 
         if ($s = $request->get('search')) {
             $q->where(fn($q) => $q->where('barang.nama','like',"%$s%")
@@ -538,10 +556,11 @@ class StokController extends Controller
     {
         $cab = $request->get('cabang');
         $q   = DB::table('stok')->join('barang','stok.kode_barang','=','barang.kode');
+        $this->joinNilaiKartu($q);
         if ($cab) $q->where('stok.cabang',$cab);
 
         $totalItem    = $q->clone()->count();
-        $nilaiStok    = $q->clone()->sum(DB::raw('stok.qty * barang.modal'));
+        $nilaiStok    = $q->clone()->sum(DB::raw('COALESCE(kv.saldo_nilai, 0)'));
         $stokRendah   = $q->clone()->whereRaw('stok.qty <= barang.stok_min AND barang.stok_min > 0')->count();
         $stokKosong   = $q->clone()->where('stok.qty','<=',0)->count();
 

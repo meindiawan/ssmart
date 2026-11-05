@@ -282,6 +282,104 @@ window.lapLihatAkun = async (kode, nama, dari, sampai, periodeLabel) => {
     }
 };
 
+/** Rincian Pembelian (klik "(+) Pembelian" / "(−) PPN Masukan" di blok HPP Laba Rugi):
+ *  daftar faktur pembelian di periode & cabang yang sama; klik faktur → bentukan jurnalnya. */
+window.lapLihatPembelian = async (dari, sampai, periodeLabel) => {
+    const cab = getCabang();
+    window._lapTraceLast = { pembelian: true, dari: dari || '', sampai: sampai || '', periodeLabel: periodeLabel || '' };
+    openM(`<div class="mhd"><h3>🧾 Rincian Pembelian (HPP)</h3><button class="mclose" onclick="closeM()">×</button></div>
+        <div class="mbd">${loadingHTML}</div>`);
+    lapSetModalFooter('<button class="btn btn-g" onclick="closeM()">Tutup</button>');
+    try {
+        const res  = await apiGet('/laporan/pembelian-detail' + buildQuery({ cabang: cab, dari, sampai }));
+        const rows = res.data || [];
+        window._lapBeliRows = rows;
+        document.querySelector('#mbox .mbd').innerHTML = `
+        <div style="font-size:12px;color:var(--ink3);margin-bottom:8px;">
+            ${cab || 'Semua cabang'} · ${esc(periodeLabel || '')} · ${res.jml_faktur} faktur (${res.jml_baris} baris barang)
+        </div>
+        <div class="note note-b" style="margin-bottom:12px;">
+            <span class="note-ico">🧮</span>
+            <span><strong>Cara perhitungan:</strong> Total faktur <strong>${R(res.total_bruto)}</strong>
+            − PPN Masukan <strong>${R(res.total_ppn)}</strong> = Pembelian (DPP) <strong>${R(res.total_dpp)}</strong>.
+            Total faktur sama dengan angka di menu Transaksi ▸ Pembelian; DPP yang masuk rumus HPP.</span>
+        </div>
+        ${rows.length ? `
+        <input class="finput" id="lapBeliCari" placeholder="🔍 Cari no. faktur / supplier / cabang…" style="width:100%;max-width:360px;margin-bottom:8px;"
+            oninput="lapFilterBeli(this.value)">
+        <table style="width:100%;">
+            <thead><tr>
+                <th style="text-align:left;">Tanggal</th><th style="text-align:left;">No. Faktur</th>
+                <th style="text-align:left;">Cabang / Supplier</th><th class="r">Item</th>
+                <th class="r">Total Faktur</th><th class="r">PPN Masukan</th><th class="r">DPP</th>
+            </tr></thead>
+            <tbody id="lapBeliBody">${lapBeliBaris(rows)}</tbody>
+            <tfoot><tr style="font-weight:700;border-top:1px solid var(--brd);">
+                <td colspan="4" style="padding:6px;">Total (${rows.length} faktur)</td>
+                <td class="r" style="padding:6px;">${R(res.total_bruto)}</td>
+                <td class="r" style="padding:6px;">${R(res.total_ppn)}</td>
+                <td class="r" style="padding:6px;">${R(res.total_dpp)}</td>
+            </tr></tfoot>
+        </table>
+        <div style="font-size:11px;color:var(--ink3);margin-top:8px;">💡 Klik salah satu faktur untuk melihat bentukan jurnalnya.</div>`
+        : '<div class="empty"><div class="ico">📭</div><strong>Tidak ada pembelian pada periode/cabang yang dipilih.</strong></div>'}`;
+    } catch (err) {
+        document.querySelector('#mbox .mbd').innerHTML = `<div class="note note-y"><span class="note-ico">⚠️</span><span>${esc(err.message)}</span></div>`;
+    }
+};
+function lapBeliBaris(rows) {
+    return rows.map(x => `<tr class="row-click" onclick="bukaBentukanRef('${esc(x.ref).replace(/'/g, "\\'")}')" title="Klik untuk lihat bentukan jurnal faktur ini">
+        <td style="font-size:12px;padding:4px 6px;white-space:nowrap;">${fmtTgl(x.tgl)}</td>
+        <td style="font-size:11px;padding:4px 6px;white-space:nowrap;"><span class="badge badge-noppn">${esc(x.ref)}</span></td>
+        <td style="font-size:12px;color:var(--ink2);padding:4px 6px;">${esc(x.cabang)}${x.supplier ? ' · ' + esc(x.supplier) : ''}</td>
+        <td class="r" style="padding:4px 6px;">${x.item}</td>
+        <td class="r" style="padding:4px 6px;">${R(x.bruto)}</td>
+        <td class="r" style="padding:4px 6px;">${x.ppn ? R(x.ppn) : ''}</td>
+        <td class="r" style="padding:4px 6px;font-weight:600;">${R(x.dpp)}</td>
+    </tr>`).join('');
+}
+window.lapFilterBeli = (v) => {
+    const q = String(v || '').toLowerCase().trim();
+    const rows = (window._lapBeliRows || []).filter(x =>
+        !q || (x.ref + ' ' + x.supplier + ' ' + x.cabang).toLowerCase().includes(q));
+    const el = document.getElementById('lapBeliBody');
+    if (el) el.innerHTML = lapBeliBaris(rows);
+};
+
+/** Rincian 1 baris "Penyesuaian lain" di blok HPP: transaksi dari Kartu HPP yang membentuknya. */
+window.lapLihatHppKartu = async (kode, label, dari, sampai, periodeLabel) => {
+    const cab = getCabang();
+    window._lapTraceLast = { hppKartu: true, kode, label, dari: dari || '', sampai: sampai || '', periodeLabel: periodeLabel || '' };
+    openM(`<div class="mhd"><h3>🔎 ${esc(label)}</h3><button class="mclose" onclick="closeM()">×</button></div>
+        <div class="mbd">${loadingHTML}</div>`);
+    lapSetModalFooter('<button class="btn btn-g" onclick="closeM()">Tutup</button>');
+    try {
+        const res  = await apiGet('/laporan/hpp-kartu-detail' + buildQuery({ kode, cabang: cab, dari, sampai }));
+        const rows = res.data || [];
+        const linkable = (ref) => /^RT-\d+$/.test(ref || '');
+        document.querySelector('#mbox .mbd').innerHTML = `
+        <div style="font-size:12px;color:var(--ink3);margin-bottom:8px;">${cab || 'Semua cabang'} · ${esc(periodeLabel || '')} · ${rows.length}${res.terpotong ? '+' : ''} baris</div>
+        <div class="note note-b" style="margin-bottom:12px;"><span class="note-ico">ℹ️</span><span>${esc(res.catatan || '')}</span></div>
+        ${res.terpotong ? '<div class="note note-y" style="margin-bottom:12px;"><span class="note-ico">⚠️</span><span>Daftar dipotong 3.000 baris pertama; total di bawah hanya untuk baris yang tampil. Persempit periode untuk melihat semuanya.</span></div>' : ''}
+        ${rows.length ? `
+        <table style="width:100%;">
+            <thead><tr><th style="text-align:left;">Tanggal</th><th style="text-align:left;">Referensi</th>
+                <th style="text-align:left;">Barang</th><th class="r">Qty</th><th class="r">Nilai</th><th style="text-align:left;">Keterangan</th></tr></thead>
+            <tbody>${rows.map(x => `<tr ${linkable(x.ref) ? `class="row-click" onclick="bukaBentukanRef('${esc(x.ref)}')" title="Klik untuk lihat bentukan jurnal"` : ''}>
+                <td style="font-size:12px;padding:4px 6px;white-space:nowrap;">${fmtTgl(x.tgl)}</td>
+                <td style="font-size:11px;padding:4px 6px;white-space:nowrap;"><span class="badge badge-noppn">${esc(x.ref || '–')}</span></td>
+                <td style="font-size:12px;padding:4px 6px;">${esc(x.nama)}<br><span style="font-family:var(--F-m);font-size:10px;color:var(--ink3);">${esc(x.kode_barang)} · ${esc(x.cabang)}</span></td>
+                <td class="r" style="padding:4px 6px;">${Number(x.qty).toLocaleString('id-ID')}</td>
+                <td class="r" style="padding:4px 6px;font-weight:600;">${R(x.nilai)}</td>
+                <td style="font-size:11px;color:var(--ink2);padding:4px 6px;">${esc(x.ket || '')}</td></tr>`).join('')}</tbody>
+            <tfoot><tr style="font-weight:700;border-top:1px solid var(--brd);"><td colspan="4" style="padding:6px;">Total</td><td class="r" style="padding:6px;">${R(res.total)}</td><td></td></tr></tfoot>
+        </table>`
+        : '<div class="empty"><div class="ico">📭</div><strong>Tidak ada transaksi.</strong></div>'}`;
+    } catch (err) {
+        document.querySelector('#mbox .mbd').innerHTML = `<div class="note note-y"><span class="note-ico">⚠️</span><span>${esc(err.message)}</span></div>`;
+    }
+};
+
 /** Level 2: bentukan jurnal lengkap (semua debit-kredit) dari 1 referensi transaksi */
 window.bukaBentukanRef = async (ref) => {
     const cab  = getCabang();
@@ -313,7 +411,9 @@ window.bukaBentukanRef = async (ref) => {
         : '<div class="empty"><div class="ico">📭</div><strong>Referensi tidak ditemukan.</strong></div>';
 
         lapSetModalFooter(
-            (back ? `<button class="btn btn-g" onclick="lapLihatAkun('${esc(back.kode)}','${esc(back.nama).replace(/'/g,"\\'")}','${back.dari}','${back.sampai}','${esc(back.periodeLabel).replace(/'/g,"\\'")}')">← Kembali ke Rincian Akun</button>` : '') +
+            (back && back.pembelian ? `<button class="btn btn-g" onclick="lapLihatPembelian('${back.dari}','${back.sampai}','${esc(back.periodeLabel).replace(/'/g,"\\'")}')">← Kembali ke Rincian Pembelian</button>`
+              : back && back.hppKartu ? `<button class="btn btn-g" onclick="lapLihatHppKartu('${esc(back.kode)}','${esc(back.label).replace(/'/g,"\\'")}','${back.dari}','${back.sampai}','${esc(back.periodeLabel).replace(/'/g,"\\'")}')">← Kembali ke Rincian</button>`
+              : back ? `<button class="btn btn-g" onclick="lapLihatAkun('${esc(back.kode)}','${esc(back.nama).replace(/'/g,"\\'")}','${back.dari}','${back.sampai}','${esc(back.periodeLabel).replace(/'/g,"\\'")}')">← Kembali ke Rincian Akun</button>` : '') +
             '<button class="btn btn-p" onclick="closeM()">Tutup</button>'
         );
     } catch (err) {
@@ -435,6 +535,10 @@ async function renderLabaRugi() {
             `class="row-click" title="${tip}" onclick="lapLihatAkun('${esc(kode)}','${esc(nama).replace(/'/g,"\\'")}',${dfArg})"`;
         const periodeLabel = lapPeriodeLabel(f);
         const dfArg = `'${f.dari||''}','${f.sampai||''}','${esc(periodeLabel).replace(/'/g,"\\'")}'`;
+        const klikBeli = (tip) => pk ? '' :
+            `class="row-click" title="${tip}" onclick="lapLihatPembelian(${dfArg})"`;
+        const klikKartu = (kode, label) => pk ? '' :
+            `class="row-click" title="Klik untuk lihat transaksi yang membentuk angka ini" onclick="lapLihatHppKartu('${esc(kode)}','${esc(label).replace(/'/g,"\\'")}',${dfArg})"`;
 
         el.innerHTML = `
         ${lapExportBar('lp-labarugi','Laporan Laba Rugi','tblLR')}
@@ -530,9 +634,11 @@ async function renderLabaRugi() {
                             </td>
                         </tr>
                         <tr><td style="${sub2}">Persediaan Awal <span style="font-size:11px;color:var(--ink3);">(nilai stok ${f.dari ? 'per ' + esc(fmtTgl(f.dari)) + ' sebelum transaksi' : 'awal'})</span></td><td class="r">${R(h.persediaan_awal)}</td></tr>
-                        <tr class="row-click" title="Angka ini sama dengan total di menu Transaksi ▸ Pembelian untuk periode & cabang yang sama" style="cursor:help;"><td style="${sub2}">(+) Pembelian <span style="font-size:11px;color:var(--ink3);">(sesuai menu Transaksi ▸ Pembelian, sudah dikurangi diskon)</span></td><td class="r">${R(pMenu)}</td></tr>
-                        ${Math.abs(h.ppn_masukan || 0) > 0.5 ? `<tr><td style="${sub2}">(−) PPN Masukan <span style="font-size:11px;color:var(--ink3);">(dikreditkan, bukan bagian HPP)</span></td><td class="r">(${R(h.ppn_masukan)})</td></tr>` : ''}
-                        ${Math.abs(h.penyesuaian_lain) > 0.5 ? `<tr><td style="${sub2}">(${h.penyesuaian_lain >= 0 ? '+' : '−'}) Penyesuaian lain <span style="font-size:11px;color:var(--ink3);">(retur, barang masuk/keluar, mutasi, stok opname)</span></td><td class="r">${R(Math.abs(h.penyesuaian_lain))}</td></tr>` : ''}
+                        <tr ${klikBeli('Klik untuk lihat daftar faktur pembelian (sama dengan menu Transaksi ▸ Pembelian)')}><td style="${sub2}">(+) Pembelian <span style="font-size:11px;color:var(--ink3);">(sesuai menu Transaksi ▸ Pembelian, sudah dikurangi diskon)</span></td><td class="r">${R(pMenu)}</td></tr>
+                        ${Math.abs(h.ppn_masukan || 0) > 0.5 ? `<tr ${klikBeli('Klik untuk lihat faktur pembelian beserta PPN Masukan-nya')}><td style="${sub2}">(−) PPN Masukan <span style="font-size:11px;color:var(--ink3);">(dikreditkan, bukan bagian HPP)</span></td><td class="r">(${R(h.ppn_masukan)})</td></tr>` : ''}
+                        ${(h.penyesuaian_rinci && h.penyesuaian_rinci.length)
+                            ? h.penyesuaian_rinci.map(x => `<tr ${x.kode === 'sisa' ? `class="row-click" title="${esc(x.ket)}" style="cursor:help;"` : klikKartu(x.kode, x.label)}><td style="${sub2}">(${x.nilai >= 0 ? '+' : '−'}) ${esc(x.label)}${x.ket ? ` <span style="font-size:11px;color:var(--ink3);">(${esc(x.ket)})</span>` : ''}</td><td class="r">${x.nilai >= 0 ? R(x.nilai) : '(' + R(Math.abs(x.nilai)) + ')'}</td></tr>`).join('')
+                            : (Math.abs(h.penyesuaian_lain) > 0.5 ? `<tr><td style="${sub2}">(${h.penyesuaian_lain >= 0 ? '+' : '−'}) Penyesuaian lain <span style="font-size:11px;color:var(--ink3);">(retur, barang masuk/keluar, mutasi, stok opname)</span></td><td class="r">${R(Math.abs(h.penyesuaian_lain))}</td></tr>` : '')}
                         <tr style="font-weight:600;"><td style="${sub}">Barang Tersedia untuk Dijual</td><td class="r">${R(tersedia)}</td></tr>
                         <tr><td style="${sub2}">(−) Persediaan Akhir <span style="font-size:11px;color:var(--ink3);">(nilai stok ${f.sampai ? 'per ' + esc(fmtTgl(f.sampai)) : 'saat ini'})</span></td><td class="r">(${R(h.persediaan_akhir)})</td></tr>
                         <tr ${klikAkun('5101', 'Harga Pokok Penjualan', 'Klik untuk lihat rincian transaksi (akun 5101)')} style="font-weight:700;border-top:1px solid var(--brd);">

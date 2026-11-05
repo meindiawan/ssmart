@@ -30,6 +30,8 @@ async function renderStok() {
             <div class="kpi red"><div class="kpi-label">Stok Rendah</div><div class="kpi-val neg">${sum.stok_rendah}</div></div>
             <div class="kpi red"><div class="kpi-label">Stok Kosong</div><div class="kpi-val neg">${sum.stok_kosong}</div></div>
         </div>
+        <div class="note note-b" style="margin-bottom:12px;"><span class="note-ico">ℹ️</span>
+            <span><strong>Nilai Stok</strong> diambil dari Kartu HPP (rata-rata pembelian per cabang) — sama dengan Persediaan di Laba Rugi. Barang yang belum pernah dibeli bernilai Rp 0.</span></div>
         <div class="box">
             <div class="box-hd">
                 <h3>Saldo Stok Barang</h3>

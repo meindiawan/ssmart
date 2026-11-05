@@ -41,6 +41,8 @@ Route::prefix('laporan')->group(function () {
     Route::get('/akun-trace',       [DashboardController::class, 'akunTrace']);
     Route::get('/bentukan-ref',     [DashboardController::class, 'bentukanRef']);
     Route::get('/rekap-ppn-detail', [DashboardController::class, 'rekapPpnDetail']);
+    Route::get('/pembelian-detail', [DashboardController::class, 'pembelianDetail']);
+    Route::get('/hpp-kartu-detail', [DashboardController::class, 'hppKartuDetail']);
 });
 
 // ── JURNAL MANUAL & MEMORIAL ────────────────────────────────────────────────

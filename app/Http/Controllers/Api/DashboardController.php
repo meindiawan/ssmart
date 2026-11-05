@@ -964,9 +964,188 @@ class DashboardController extends Controller
             'pembelian_menu'   => round($pembelianBruto),   // = total di menu Transaksi ▸ Pembelian
             'ppn_masukan'      => round($ppnMasukan),
             'penyesuaian_lain' => round($lain),
+            'penyesuaian_rinci'=> $this->rinciPenyesuaianHpp($cabang, $dari, $sampai, $pembelian, round($lain)),
             'persediaan_akhir' => round($akhir),
             'hpp'              => round($hppJurnal),
         ];
+    }
+
+    // Kamus komponen "Penyesuaian lain" → filter Kartu HPP. Dipakai bersama oleh
+    // rinciPenyesuaianHpp() (angka di Laba Rugi) dan hppKartuDetail() (rincian saat diklik),
+    // supaya angka & daftar transaksinya PASTI memakai definisi yang sama.
+    private const PENYESUAIAN_DEF = [
+        'barang_masuk'  => ['label' => 'Barang Masuk (di luar Pembelian)',   'tanda' => '+', 'kolom' => 'nilai_masuk',  'tipe' => ['Barang Masuk']],
+        'mutasi_masuk'  => ['label' => 'Mutasi Masuk dari cabang lain',      'tanda' => '+', 'kolom' => 'nilai_masuk',  'tipe' => ['Mutasi Masuk']],
+        'opname_plus'   => ['label' => 'Stok Opname lebih (+)',              'tanda' => '+', 'kolom' => 'nilai_masuk',  'tipe' => ['Opname (+)']],
+        'retur_beli'    => ['label' => 'Retur Pembelian ke supplier',        'tanda' => '-', 'kolom' => 'nilai_keluar', 'tipe' => ['Retur Beli']],
+        'mutasi_keluar' => ['label' => 'Mutasi Keluar ke cabang lain',       'tanda' => '-', 'kolom' => 'nilai_keluar', 'tipe' => ['Mutasi Keluar']],
+        'opname_minus'  => ['label' => 'Stok Opname kurang (−)',             'tanda' => '-', 'kolom' => 'nilai_keluar', 'tipe' => ['Opname (-)']],
+        'bk_lain'       => ['label' => 'Barang Keluar non-penjualan (retur beli/rusak/sample)', 'tanda' => '-', 'kolom' => 'nilai_keluar', 'tipe_like' => 'Barang Keluar (%', 'kecuali' => 'Barang Keluar (Penjualan)'],
+    ];
+
+    // "Penyesuaian lain" sebelumnya hanyalah SELISIH (HPP jurnal − (awal + pembelian − akhir)),
+    // jadi tidak kelihatan terdiri dari apa. Di sini selisih itu diuraikan per jenis transaksi
+    // dari Kartu HPP pada periode yang sama. Retur Jual TIDAK muncul di sini karena memang
+    // sudah netral: nilainya mengurangi HPP (Cr 5101) sekaligus menambah Persediaan (Dr 1105).
+    // Sisa yang tidak terjelaskan ditampilkan sebagai "Selisih lainnya" supaya total tetap klop.
+    private function rinciPenyesuaianHpp(?string $cabang, ?string $dari, ?string $sampai, float $pembelianTrx, float $lainTotal): array
+    {
+        $kq = DB::table('hpp_kartu');
+        if ($cabang) $kq->where('cabang', $cabang);
+        if ($dari)   $kq->where('tgl', '>=', $dari);
+        if ($sampai) $kq->where('tgl', '<=', $sampai);
+        $per = $kq->selectRaw('tipe, COALESCE(SUM(nilai_masuk),0) AS m, COALESCE(SUM(nilai_keluar),0) AS k')
+            ->groupBy('tipe')->get()->keyBy('tipe');
+
+        $rinci = [];
+        // 1) Pembelian: nilai di Kartu HPP vs total di menu Pembelian (DPP)
+        $selBeli = round((float) ($per['Pembelian']->m ?? 0) - $pembelianTrx);
+        if (abs($selBeli) >= 1) {
+            $rinci[] = ['kode' => 'sel_pembelian', 'label' => 'Selisih Pembelian vs Kartu HPP', 'nilai' => $selBeli,
+                'ket' => 'Pembelian yang tidak/ belum tercatat di Kartu HPP (barang belum ada di Master Barang, harga 0, dll). Klik untuk lihat daftarnya.'];
+        }
+        // 2) Komponen per jenis transaksi
+        foreach (self::PENYESUAIAN_DEF as $kode => $d) {
+            $nilai = 0.0;
+            if (isset($d['tipe'])) {
+                foreach ($d['tipe'] as $t) $nilai += (float) ($per[$t]->{$d['kolom'] === 'nilai_masuk' ? 'm' : 'k'} ?? 0);
+            } else {
+                foreach ($per as $t => $row) {
+                    if (str_starts_with($t, 'Barang Keluar (') && $t !== $d['kecuali']) $nilai += (float) $row->k;
+                }
+            }
+            $nilai = round($nilai);
+            if (abs($nilai) < 1) continue;
+            $rinci[] = ['kode' => $kode, 'label' => $d['label'], 'nilai' => $d['tanda'] === '-' ? -$nilai : $nilai, 'ket' => ''];
+        }
+        // 3) Sisa (jurnal manual ke akun HPP, pembulatan, dll)
+        $sisa = round($lainTotal) - array_sum(array_column($rinci, 'nilai'));
+        if (abs($sisa) >= 1) {
+            $rinci[] = ['kode' => 'sisa', 'label' => 'Selisih lainnya', 'nilai' => $sisa,
+                'ket' => 'Jurnal manual ke akun HPP/Persediaan, pembulatan, atau transaksi yang nilai jurnalnya berbeda dari Kartu HPP.'];
+        }
+        return $rinci;
+    }
+
+    // Rincian transaksi di balik 1 baris "Penyesuaian lain" (klik di Laba Rugi).
+    public function hppKartuDetail(Request $request)
+    {
+        $kode   = (string) $request->get('kode');
+        $cabang = $request->get('cabang');
+        $dari   = $request->get('dari');
+        $sampai = $request->get('sampai');
+        $LIMIT  = 3000;
+
+        // Pembelian yang tidak punya baris di Kartu HPP (penyebab "Selisih Pembelian vs Kartu HPP")
+        if ($kode === 'sel_pembelian') {
+            $div = 1 + $this->getTarif();
+            $q = DB::table('trx_beli')->leftJoin('barang', 'trx_beli.kode_barang', '=', 'barang.kode')
+                ->whereNotExists(function ($sub) {
+                    $sub->select(DB::raw(1))->from('hpp_kartu')
+                        ->whereColumn('hpp_kartu.ref_id', 'trx_beli.id')
+                        ->where('hpp_kartu.ref_tabel', 'trx_beli')
+                        ->where('hpp_kartu.qty_masuk', '>', 0);
+                });
+            if ($cabang) $q->where('trx_beli.cabang', $cabang);
+            if ($dari)   $q->where('trx_beli.tgl', '>=', $dari);
+            if ($sampai) $q->where('trx_beli.tgl', '<=', $sampai);
+            $tot  = "(trx_beli.qty * trx_beli.harga - COALESCE(trx_beli.diskon, 0))";
+            $kena = "COALESCE(NULLIF(trx_beli.ppn, ''), barang.ppn) = 'Kena PPN'";
+            $rows = $q->selectRaw("trx_beli.tgl, trx_beli.cabang, trx_beli.no_nota, trx_beli.id, trx_beli.kode_barang, barang.nama AS nama_barang,
+                    trx_beli.qty, ROUND(CASE WHEN $kena THEN $tot / ? ELSE $tot END) AS nilai,
+                    CASE WHEN barang.kode IS NULL THEN 'Barang belum ada di Master Barang' ELSE 'Tidak tercatat di Kartu HPP (mis. harga 0)' END AS ket", [$div])
+                ->orderBy('trx_beli.tgl')->orderBy('trx_beli.id')->limit($LIMIT + 1)->get();
+            $terpotong = $rows->count() > $LIMIT;
+            $rows = $rows->take($LIMIT)->map(fn($r) => [
+                'tgl' => $r->tgl, 'cabang' => $r->cabang, 'ref' => $r->no_nota ?: ('PB-' . $r->id),
+                'kode_barang' => $r->kode_barang, 'nama' => $r->nama_barang ?: '(belum di Master)',
+                'qty' => (float) $r->qty, 'nilai' => (float) $r->nilai, 'ket' => $r->ket,
+            ])->values();
+            return response()->json([
+                'judul' => 'Pembelian yang tidak tercatat di Kartu HPP', 'data' => $rows,
+                'total' => round($rows->sum('nilai')), 'terpotong' => $terpotong,
+                'catatan' => 'Nilai = DPP (setelah diskon, tanpa PPN Masukan). Barang ini ikut dihitung di total menu Pembelian, tetapi tidak membentuk persediaan di Kartu HPP.',
+            ]);
+        }
+
+        $d = self::PENYESUAIAN_DEF[$kode] ?? null;
+        if (!$d) return response()->json(['message' => 'Komponen tidak dikenal'], 422);
+
+        $q = DB::table('hpp_kartu')->leftJoin('barang', 'hpp_kartu.kode_barang', '=', 'barang.kode');
+        if ($cabang) $q->where('hpp_kartu.cabang', $cabang);
+        if ($dari)   $q->where('hpp_kartu.tgl', '>=', $dari);
+        if ($sampai) $q->where('hpp_kartu.tgl', '<=', $sampai);
+        if (isset($d['tipe'])) $q->whereIn('hpp_kartu.tipe', $d['tipe']);
+        else $q->where('hpp_kartu.tipe', 'like', $d['tipe_like'])->where('hpp_kartu.tipe', '<>', $d['kecuali']);
+        $kol = 'hpp_kartu.' . $d['kolom'];
+        $qtyKol = $d['kolom'] === 'nilai_masuk' ? 'hpp_kartu.qty_masuk' : 'hpp_kartu.qty_keluar';
+        $q->where($kol, '<>', 0);
+
+        $rows = $q->selectRaw("hpp_kartu.tgl, hpp_kartu.cabang, hpp_kartu.ref, hpp_kartu.kode_barang, barang.nama AS nama_barang,
+                hpp_kartu.tipe, hpp_kartu.keterangan, $qtyKol AS qty, $kol AS nilai")
+            ->orderBy('hpp_kartu.tgl')->orderBy('hpp_kartu.id')->limit($LIMIT + 1)->get();
+        $terpotong = $rows->count() > $LIMIT;
+        $rows = $rows->take($LIMIT)->map(fn($r) => [
+            'tgl' => $r->tgl, 'cabang' => $r->cabang, 'ref' => $r->ref, 'kode_barang' => $r->kode_barang,
+            'nama' => $r->nama_barang ?: $r->kode_barang, 'qty' => (float) $r->qty, 'nilai' => (float) $r->nilai,
+            'ket' => $r->tipe,
+        ])->values();
+
+        return response()->json([
+            'judul' => $d['label'], 'tanda' => $d['tanda'], 'data' => $rows,
+            'total' => round($rows->sum('nilai')), 'terpotong' => $terpotong,
+            'catatan' => 'Nilai diambil dari Kartu HPP (rata-rata bergerak per cabang) — sama dengan yang dipakai Persediaan Awal/Akhir di Laba Rugi.',
+        ]);
+    }
+
+    // Rincian Pembelian di Laba Rugi (klik angka "(+) Pembelian" / "(−) PPN Masukan"):
+    // daftar faktur pembelian pada periode & cabang yang sama persis dengan hppRincian()
+    // dan menu Transaksi ▸ Pembelian. Per faktur: total (bruto), PPN Masukan, DPP.
+    public function pembelianDetail(Request $request)
+    {
+        $cabang = $request->get('cabang');
+        $dari   = $request->get('dari');
+        $sampai = $request->get('sampai');
+        $div    = 1 + $this->getTarif();
+
+        $q = DB::table('trx_beli')->leftJoin('barang', 'trx_beli.kode_barang', '=', 'barang.kode');
+        if ($cabang) $q->where('trx_beli.cabang', $cabang);
+        if ($dari)   $q->where('trx_beli.tgl', '>=', $dari);
+        if ($sampai) $q->where('trx_beli.tgl', '<=', $sampai);
+        $tot  = "(trx_beli.qty * trx_beli.harga - COALESCE(trx_beli.diskon, 0))";
+        $kena = "COALESCE(NULLIF(trx_beli.ppn, ''), barang.ppn) = 'Kena PPN'";
+        $rows = $q->selectRaw("trx_beli.id, trx_beli.tgl, trx_beli.cabang, trx_beli.no_nota, trx_beli.supplier,
+                $tot AS bruto, CASE WHEN $kena THEN $tot - $tot / ? ELSE 0 END AS ppn", [$div])
+            ->orderBy('trx_beli.tgl')->orderBy('trx_beli.id')->get();
+
+        $grup = [];
+        $sumBruto = 0.0; $sumPpn = 0.0;
+        foreach ($rows as $r) {
+            $ref = $r->no_nota ?: ('PB-' . $r->id);
+            $key = $r->cabang . '|' . $ref;
+            if (!isset($grup[$key])) {
+                $grup[$key] = ['ref' => $ref, 'tgl' => $r->tgl, 'cabang' => $r->cabang, 'supplier' => $r->supplier ?: '',
+                    'item' => 0, 'bruto' => 0.0, 'ppn' => 0.0];
+            }
+            $grup[$key]['item']++;
+            $grup[$key]['bruto'] += (float) $r->bruto;
+            $grup[$key]['ppn']   += (float) $r->ppn;
+            $sumBruto += (float) $r->bruto; $sumPpn += (float) $r->ppn;
+        }
+        $data = array_map(function ($g) {
+            $g['dpp'] = round($g['bruto'] - $g['ppn']);
+            $g['bruto'] = round($g['bruto']); $g['ppn'] = round($g['ppn']);
+            return $g;
+        }, array_values($grup));
+
+        return response()->json([
+            'data'        => $data,
+            'jml_faktur'  => count($data),
+            'jml_baris'   => $rows->count(),
+            'total_bruto' => round($sumBruto),
+            'total_ppn'   => round($sumPpn),
+            'total_dpp'   => round($sumBruto - $sumPpn),
+        ]);
     }
 
     // Daftar barang TERJUAL yang HPP-nya Rp 0 — artinya belum ada Pembelian

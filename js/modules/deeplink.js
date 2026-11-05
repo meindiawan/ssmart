@@ -14,7 +14,8 @@
 (() => {
     // Hanya fungsi di daftar ini yang boleh dibuka lewat tautan (keamanan).
     const WL = ['lihatKartuHpp', 'lapLihatAkun', 'bukaBentukanRef', 'bukaRiwayatNota', 'bukaRiwayatKontak',
-                'bukaJadwalAset', 'bukaDetailPoin', 'bukaDetailNotaJual', 'bukaDetailNotaBeli', 'openMutasiDetail'];
+                'bukaJadwalAset', 'bukaDetailPoin', 'bukaDetailNotaJual', 'bukaDetailNotaBeli', 'openMutasiDetail',
+                'lapLihatPembelian', 'lapLihatHppKartu'];
     const PREFIX = { analisis: 'an', master: 'ms', transaksi: 'tx', stok: 'stok', jurnal: 'jr', laporan: 'lp', sid: 'sid', sinkron: 'sk' };
     const TAB_OF = Object.fromEntries(Object.entries(PREFIX).map(([t, p]) => [p, t]));
     const NAVID  = { an: 'snAnalisis', ms: 'snMaster', tx: 'snTrx', stok: 'snStok', jr: 'snJurnal', lp: 'snLap', sid: 'snSid', sk: 'snSinkron' };
