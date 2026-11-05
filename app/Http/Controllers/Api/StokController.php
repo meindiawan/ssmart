@@ -84,7 +84,7 @@ class StokController extends Controller
     // (BUKAN qty × Harga Modal di Master Barang seperti sebelumnya).
     private function joinNilaiKartu($q)
     {
-        $sub = "(SELECT hk.kode_barang, hk.cabang, hk.saldo_nilai FROM hpp_kartu hk
+        $sub = "(SELECT hk.kode_barang, hk.cabang, hk.saldo_nilai, hk.saldo_qty FROM hpp_kartu hk
                  WHERE hk.id = (SELECT h2.id FROM hpp_kartu h2
                                 WHERE h2.kode_barang = hk.kode_barang AND h2.cabang = hk.cabang
                                 ORDER BY h2.tgl DESC, h2.urutan DESC, h2.id DESC LIMIT 1)) kv";
@@ -105,7 +105,8 @@ class StokController extends Controller
             ->select('stok.*', 'barang.nama', 'barang.satuan1', 'barang.satuan2',
                      'barang.harga_jual', 'barang.modal', 'barang.stok_min', 'barang.stok_max',
                      'barang.kategori', 'barang.ppn',
-                     DB::raw('COALESCE(kv.saldo_nilai, 0) AS nilai_kartu'));
+                     DB::raw('COALESCE(kv.saldo_nilai, 0) AS nilai_kartu'),
+                     DB::raw('COALESCE(kv.saldo_qty, 0) AS qty_kartu'));
         $this->joinNilaiKartu($q);
 
         if ($cab = $request->get('cabang')) $q->where('stok.cabang', $cab);
@@ -132,6 +133,7 @@ class StokController extends Controller
         $list = $list->map(function($item) {
             $item->stok_rendah = $item->stok_min > 0 && $item->qty <= $item->stok_min;
             $item->nilai_stok  = (float) $item->nilai_kartu; // Kartu HPP (hanya dari Pembelian); belum ada pembelian = 0
+            $item->selisih_kartu = abs((float) $item->qty - (float) $item->qty_kartu) > 0.01 && ((float) $item->qty_kartu > 0.01 || (float) $item->qty > 0.01);
             return $item;
         });
 
@@ -560,7 +562,17 @@ class StokController extends Controller
         if ($cab) $q->where('stok.cabang',$cab);
 
         $totalItem    = $q->clone()->count();
-        $nilaiStok    = $q->clone()->sum(DB::raw('COALESCE(kv.saldo_nilai, 0)'));
+        // Nilai Stok = jumlah saldo nilai TERAKHIR Kartu HPP semua barang (tanpa bergantung
+        // pada ada/tidaknya baris di tabel stok) → PERSIS sama dengan "Persediaan Akhir" di
+        // Laba Rugi (tanpa tanggal akhir) untuk cabang yang sama.
+        $sqlNilai = "SELECT COALESCE(SUM(hk.saldo_nilai),0) AS n FROM hpp_kartu hk
+                     WHERE hk.id = (SELECT h2.id FROM hpp_kartu h2
+                                    WHERE h2.kode_barang = hk.kode_barang AND h2.cabang = hk.cabang
+                                    ORDER BY h2.tgl DESC, h2.urutan DESC, h2.id DESC LIMIT 1)"
+                      . ($cab ? " AND hk.cabang = ?" : "");
+        $nilaiStok    = (float) (DB::selectOne($sqlNilai, $cab ? [$cab] : [])->n ?? 0);
+        $itemSelisih  = $q->clone()->whereRaw('ABS(stok.qty - COALESCE(kv.saldo_qty, 0)) > 0.01')
+                          ->whereRaw('(stok.qty > 0.01 OR COALESCE(kv.saldo_qty, 0) > 0.01)')->count();
         $stokRendah   = $q->clone()->whereRaw('stok.qty <= barang.stok_min AND barang.stok_min > 0')->count();
         $stokKosong   = $q->clone()->where('stok.qty','<=',0)->count();
 
@@ -569,6 +581,7 @@ class StokController extends Controller
             'nilai_stok'  => $nilaiStok,
             'stok_rendah' => $stokRendah,
             'stok_kosong' => $stokKosong,
+            'item_selisih_kartu' => $itemSelisih,
         ]);
     }
 

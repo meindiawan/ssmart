@@ -64,6 +64,14 @@ class HppService
     /** true = HPP hanya dari Pembelian (lihat penjelasan di atas). */
     public const HANYA_DARI_PEMBELIAN = true;
 
+    /** true = HPP & nilai keluar HANYA untuk qty yang tertutup stok hasil pembelian.
+     *  Qty yang dijual/keluar melebihi saldo dihitung HPP Rp 0 dan dicatat sebagai
+     *  "hutang barang"; pembelian/barang masuk berikutnya lebih dulu menutup hutang itu
+     *  (unit-unit itu sudah terjual), jadi nilai persediaan = hanya unit yang BENAR-BENAR
+     *  masih ada. Tanpa ini, 1 pembelian susulan membuat stok "hantu" bernilai di Kartu HPP
+     *  padahal qty di menu Stok sudah lebih kecil/minus. */
+    public const KELUAR_HANYA_YANG_TERSEDIA = true;
+
     /** true = kalau cabang itu belum punya biaya sendiri tapi barangnya
      *  pernah dibeli di cabang LAIN (tanggal ≤ penjualan), pakai harga beli
      *  terakhir itu. false (DEFAULT, sejak revisi 5 Nov 2026) = ketat per
@@ -171,6 +179,7 @@ class HppService
         $mutasiHpp = [];   // [mutasi_kirim_detail_id => hpp per satuan saat dikirim]
         $lastHpp = [];     // ['cabang' => rata-rata positif terakhir]
         $lastBeli = null;  // harga Pembelian terakhir (cabang mana pun)
+        $hutang = [];      // ['cabang' => qty terjual/keluar melebihi saldo bernilai (belum tertutup pembelian)]
         $rows = [];
         $urutan = 0;
 
@@ -200,14 +209,32 @@ class HppService
                 // benar-benar ada yang dinilai (qty minus sudah terjual lebih dulu)
                 if ($harga !== null && isset($e['qty_nilai'])) $qty = (float) $e['qty_nilai'];
 
+                // Tutup "hutang barang" lebih dulu (unit yang sudah terlanjur terjual).
+                // Opname(+) sudah memperhitungkannya sendiri lewat qty_nilai.
+                $qtyNilai = $qty;
+                $tutup = 0.0;
+                $hut = (float) ($hutang[$cab] ?? 0.0);
+                if (self::KELUAR_HANYA_YANG_TERSEDIA && $hut > 0.0001) {
+                    if ($e['ref_tabel'] === 'stok_opname_detail') {
+                        $tutup = max(0.0, (float) $e['qty'] - $qty);
+                    } else {
+                        $tutup = min($qty, $hut);
+                        $qtyNilai = $qty - $tutup;
+                    }
+                    $hutang[$cab] = max(0.0, $hut - $tutup);
+                    if ($tutup > 0.0001 && $harga !== null) {
+                        $row['keterangan'] = trim(($row['keterangan'] ?? '') . ' [' . round($tutup, 2) . ' unit menutup barang yang sudah terjual lebih dulu]');
+                    }
+                }
+
                 if ($harga === null) {
                     // Belum ada basis biaya dari pembelian → qty ini tidak ikut
                     // dinilai (saldo tetap), supaya tidak mengencerkan rata-rata.
                     $row['qty_masuk'] = round($qty, 2);
                     $row['hpp_satuan'] = round($hppSebelum, 2);
                 } else {
-                    $nilaiMasuk = $qty * $harga;
-                    $newQty = $before['qty'] + $qty;
+                    $nilaiMasuk = $qtyNilai * $harga;
+                    $newQty = $before['qty'] + $qtyNilai;
                     $newNilai = $before['nilai'] + $nilaiMasuk;
                     $newHpp = $newQty > 0.0001 ? $newNilai / $newQty : 0.0;
 
@@ -221,7 +248,14 @@ class HppService
                 $qty = (float) $e['qty'];
                 // HPP = rata-rata hasil PEMBELIAN. Belum ada pembelian → 0.
                 $hppPakai = $this->hargaKeluar($e, $hppSebelum, $lastHpp[$cab] ?? null, $lastBeli, $beliAwal[$cab] ?? ($beliAwal['*'] ?? null));
-                $nilaiKeluar = $qty * $hppPakai;
+                // Hanya qty yang tertutup saldo bernilai yang ber-HPP; sisanya HPP 0 + hutang barang.
+                $tersedia = $before['qty'] > 0.0001 ? $before['qty'] : 0.0;
+                $qtyBerHpp = self::KELUAR_HANYA_YANG_TERSEDIA ? min($qty, $tersedia) : $qty;
+                $nilaiKeluar = $qtyBerHpp * $hppPakai;
+                if (self::KELUAR_HANYA_YANG_TERSEDIA && $qty - $qtyBerHpp > 0.0001) {
+                    $hutang[$cab] = (float) ($hutang[$cab] ?? 0.0) + ($qty - $qtyBerHpp);
+                    $row['keterangan'] = trim(($row['keterangan'] ?? '') . ' [' . round($qty - $qtyBerHpp, 2) . ' unit melebihi stok pembelian → HPP 0]');
+                }
 
                 if ($before['qty'] > 0.0001 && $qty < $before['qty'] - 0.0001) {
                     $newQty = $before['qty'] - $qty;
@@ -240,7 +274,7 @@ class HppService
                 if ($e['ref_tabel'] === 'mutasi_kirim_detail') {
                     // simpan HPP saat dikirim, supaya sisi "masuk" di cabang tujuan
                     // membawa NILAI YANG SAMA (0 = tidak ada basis biaya)
-                    $mutasiHpp[$e['ref_id']] = $hppPakai;
+                    $mutasiHpp[$e['ref_id']] = $qty > 0 ? $nilaiKeluar / $qty : $hppPakai; // rata-rata nilai yang benar-benar tertutup stok
                 }
             }
 
