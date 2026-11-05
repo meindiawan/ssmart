@@ -65,18 +65,23 @@ class HppService
     public const HANYA_DARI_PEMBELIAN = true;
 
     /** true = kalau cabang itu belum punya biaya sendiri tapi barangnya
-     *  pernah dibeli (di cabang mana pun, tanggal ≤ penjualan), pakai harga
-     *  beli terakhir itu. false = ketat per cabang (belum beli di cabang itu = 0). */
-    public const PAKAI_HARGA_BELI_CABANG_LAIN = true;
+     *  pernah dibeli di cabang LAIN (tanggal ≤ penjualan), pakai harga beli
+     *  terakhir itu. false (DEFAULT, sejak revisi 5 Nov 2026) = ketat per
+     *  cabang: barang yang belum ada pembeliannya DI CABANG ITU = HPP 0.
+     *  Alasan: kalau true, 1 pembelian di Pusat membuat SELURUH penjualan
+     *  barang itu di cabang lain ber-HPP > 0 berapa pun qty-nya, sehingga
+     *  nilai penjualan ber-HPP > 0 bisa jauh melebihi nilai pembelian.
+     *  Barang yang dikirim antar cabang tetap membawa biayanya lewat Mutasi. */
+    public const PAKAI_HARGA_BELI_CABANG_LAIN = false;
 
-    /** true = kalau barang itu PERNAH dibeli (tanggal berapa pun) tapi penjualannya
-     *  terjadi SEBELUM pembelian pertama, HPP penjualan itu memakai rata-rata
-     *  pembelian TERAWAL barang tsb (cabang yang sama dulu, kalau tidak ada baru
-     *  cabang lain). Pembelian yang datang belakangan TIDAK mengubah HPP
-     *  penjualan sebelumnya (rata-rata tetap berjalan menurut urutan tanggal).
-     *  false = penjualan sebelum pembelian pertama → HPP 0. Barang yang SAMA
-     *  SEKALI belum pernah dibeli selalu HPP 0, apa pun nilai konstanta ini. */
-    public const PAKAI_PEMBELIAN_TERAWAL = true;
+    /** true = penjualan SEBELUM pembelian pertama barang itu memakai rata-rata
+     *  pembelian terawal (yang terjadi di TANGGAL SESUDAH penjualan).
+     *  false (DEFAULT, sejak revisi 5 Nov 2026) = penjualan sebelum ada
+     *  pembelian → HPP 0. Pembelian yang datang belakangan TIDAK boleh
+     *  memberi HPP ke penjualan yang terjadi lebih dulu — kalau diizinkan,
+     *  semua barang yang dijual tgl X tapi baru dibeli tgl > X ikut ber-HPP,
+     *  dan daftar "barang terjual HPP Rp 0" jadi terlalu kecil. */
+    public const PAKAI_PEMBELIAN_TERAWAL = false;
 
     /** Harga masuk utk sebuah event masuk. Return null = tidak ada basis
      *  biaya (tidak ikut dicatat di Kartu HPP). $lastBeli diisi kalau event
@@ -322,20 +327,27 @@ class HppService
         return $q->orderByDesc('tgl')->orderByDesc('urutan')->limit($limit)->get();
     }
 
+    /** MySQL membatasi 65.535 placeholder per query. Dengan data besar (puluhan
+     *  ribu baris penjualan) whereIn('ref_id', semua id) meledak dgn error 1390
+     *  "Prepared statement contains too many placeholders" — jadi SEMUA lookup
+     *  by id di bawah dipecah per 5.000 id. Hasil digabung (key = ref_id). */
+    private function chunkedRows(string $refTabel, array $refIds, callable $mod): array
+    {
+        $out = [];
+        foreach (array_chunk(array_values($refIds), 5000) as $chunk) {
+            $q = DB::table('hpp_kartu')->where('ref_tabel', $refTabel)->whereIn('ref_id', $chunk);
+            foreach ($mod($q)->get() as $r) $out[$r->ref_id] = $r;
+        }
+        return $out;
+    }
+
     /** Cari nilai HPP (total, bukan per satuan) sebuah baris keluar berdasarkan
      *  tabel & id sumbernya — dipakai DashboardController::buildJurnal. */
     public function hppMapUntukJurnal(string $refTabel, array $refIds): array
     {
         if (empty($refIds)) return [];
-        // Chunk: MySQL membatasi 65.535 placeholder per prepared statement (error 1390).
-        $out = [];
-        foreach (array_chunk(array_values($refIds), 5000) as $chunk) {
-            $out += DB::table('hpp_kartu')
-                ->where('ref_tabel', $refTabel)->whereIn('ref_id', $chunk)
-                ->where('qty_keluar', '>', 0)
-                ->pluck('nilai_keluar', 'ref_id')->toArray();
-        }
-        return $out;
+        $rows = $this->chunkedRows($refTabel, $refIds, fn($q) => $q->where('qty_keluar', '>', 0)->select('ref_id', 'nilai_keluar'));
+        return array_map(fn($r) => $r->nilai_keluar, $rows);
     }
 
     /** Nilai HPP baris MASUK (mis. Retur Jual: barang kembali ke gudang) berdasarkan
@@ -345,14 +357,8 @@ class HppService
     public function hppMasukUntukJurnal(string $refTabel, array $refIds): array
     {
         if (empty($refIds)) return [];
-        $out = [];
-        foreach (array_chunk(array_values($refIds), 5000) as $chunk) {
-            $out += DB::table('hpp_kartu')
-                ->where('ref_tabel', $refTabel)->whereIn('ref_id', $chunk)
-                ->where('qty_masuk', '>', 0)
-                ->pluck('nilai_masuk', 'ref_id')->toArray();
-        }
-        return $out;
+        $rows = $this->chunkedRows($refTabel, $refIds, fn($q) => $q->where('qty_masuk', '>', 0)->select('ref_id', 'nilai_masuk'));
+        return array_map(fn($r) => $r->nilai_masuk, $rows);
     }
 
     /** Nilai persediaan (Rp) yang DIKIRIM pada tiap baris Mutasi (keluar dari
@@ -363,20 +369,11 @@ class HppService
     public function nilaiKirimMutasi(string $refTabel, array $refIds): array
     {
         if (empty($refIds)) return [];
-        $out = [];
-        foreach (array_chunk(array_values($refIds), 5000) as $chunk) {
-            $rows = DB::table('hpp_kartu')
-                ->where('ref_tabel', $refTabel)->whereIn('ref_id', $chunk)
-                ->where('qty_keluar', '>', 0)
-                ->get(['ref_id', 'nilai_keluar', 'qty_keluar']);
-            foreach ($rows as $r) {
-                $out[$r->ref_id] = [
-                    'nilai' => (float) $r->nilai_keluar,
-                    'satuan' => (float) $r->qty_keluar > 0 ? (float) $r->nilai_keluar / (float) $r->qty_keluar : 0.0,
-                ];
-            }
-        }
-        return $out;
+        $rows = $this->chunkedRows($refTabel, $refIds, fn($q) => $q->where('qty_keluar', '>', 0)->select('ref_id', 'nilai_keluar', 'qty_keluar'));
+        return array_map(fn($r) => [
+            'nilai' => (float) $r->nilai_keluar,
+            'satuan' => (float) $r->qty_keluar > 0 ? (float) $r->nilai_keluar / (float) $r->qty_keluar : 0.0,
+        ], $rows);
     }
 
     /** Nilai (bertanda) Kartu HPP utk baris Opname — dipakai jurnal selisih
@@ -384,16 +381,8 @@ class HppService
     public function hppNilaiOpname(array $refIds): array
     {
         if (empty($refIds)) return [];
-        $out = [];
-        foreach (array_chunk(array_values($refIds), 5000) as $chunk) {
-            $rows = DB::table('hpp_kartu')
-                ->where('ref_tabel', 'stok_opname_detail')->whereIn('ref_id', $chunk)
-                ->get();
-            foreach ($rows as $r) {
-                $out[$r->ref_id] = $r->qty_masuk > 0 ? (float) $r->nilai_masuk : -(float) $r->nilai_keluar;
-            }
-        }
-        return $out;
+        $rows = $this->chunkedRows('stok_opname_detail', $refIds, fn($q) => $q);
+        return array_map(fn($r) => $r->qty_masuk > 0 ? (float) $r->nilai_masuk : -(float) $r->nilai_keluar, $rows);
     }
 
     /** Deteksi kekurangan Saldo Awal per cabang utk SATU kode barang — dipakai
@@ -584,7 +573,14 @@ class HppService
                 // yang masuk faktur (termasuk PPN Masukan) di-DPP-kan dulu supaya
                 // HPP TIDAK ikut naik gara-gara pajak yang bisa dikreditkan.
                 $kena  = ($r->ppn ?: $r->ppn_master) === 'Kena PPN';
-                $harga = $kena ? (float) $r->harga / (1 + $tarif) : (float) $r->harga;
+                // Harga efektif per satuan = (qty × harga − diskon) / qty. Diskon
+                // di trx_beli adalah nominal Rp per baris (sama dgn dipakai
+                // buildJurnal & menu Pembelian), jadi WAJIB ikut dikurangkan —
+                // kalau tidak, nilai Pembelian di Kartu HPP/Laba Rugi lebih besar
+                // dari menu Transaksi ▸ Pembelian.
+                $qtyB   = (float) $r->qty;
+                $netto  = $qtyB > 0 ? ((float) $r->harga * $qtyB - (float) ($r->diskon ?? 0)) / $qtyB : (float) $r->harga;
+                $harga = $kena ? $netto / (1 + $tarif) : $netto;
                 $events->push(['tgl' => $r->tgl, 'rank' => $RANK_BELI, 'id' => $r->id, 'arah' => 'masuk',
                     'cabang' => $r->cabang, 'qty' => (float) $r->qty, 'harga' => $harga,
                     'tipe' => 'Pembelian', 'ref_tabel' => 'trx_beli', 'ref_id' => $r->id,

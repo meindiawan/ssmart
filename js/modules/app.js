@@ -79,8 +79,9 @@ function pageScrollTo(where) {
     document.getElementById('splash').style.display = 'none';
     document.getElementById('app').style.display    = 'flex';
 
-    // Step 3: render tab awal (dashboard)
-    await setTab('dashboard');
+    // Step 3: render tab awal — sesuai hash URL (mis. #transaksi/beli) kalau dibuka
+    // lewat "Buka di tab baru", kalau tidak ya Dashboard
+    await bukaDariHash();
 
     // Step 4: tampilkan peringatan jika gagal koneksi
     if (!ok) {

@@ -36,6 +36,169 @@ const activeSubTab = {
     sk: 'jual',
 };
 
+
+/* ── TAB HALAMAN (multi-tab DI DALAM aplikasi) ───────────────
+   Seperti tab browser, tapi di dalam web ini: deretan tab di bawah topbar.
+   Tiap tab menyimpan halaman (menu + sub-menu + cabang) dan posisi scroll.
+   Cara membuka tab baru: tombol "＋ Tab Baru" (menggandakan halaman aktif),
+   ikon ↗ di menu samping, atau Ctrl/Cmd/Shift + klik / klik tengah pada
+   menu & sub-menu. Klik menu biasa = pindah halaman di tab yang aktif.
+   Daftar tab disimpan di browser (localStorage) sehingga tetap ada setelah refresh. */
+const TAB_PREFIX = { analisis: 'an', master: 'ms', transaksi: 'tx', stok: 'stok', jurnal: 'jr', laporan: 'lp', sid: 'sid', sinkron: 'sk' };
+const SUBNAV_ID  = { an: 'snAnalisis', ms: 'snMaster', tx: 'snTrx', stok: 'snStok', jr: 'snJurnal', lp: 'snLap', sid: 'snSid', sk: 'snSinkron' };
+
+function buildHash(tab, sub) {
+    let h = '#' + encodeURIComponent(tab);
+    const pf = TAB_PREFIX[tab];
+    const s  = sub || (pf ? activeSubTab[pf] : '');
+    if (pf && s) h += '/' + encodeURIComponent(s);
+    const cab = document.getElementById('gCabang')?.value;
+    if (cab) h += '?cabang=' + encodeURIComponent(cab);
+    return h;
+}
+
+function syncHash() {
+    try { history.replaceState(null, '', buildHash(activeTab)); } catch (e) { /* abaikan */ }
+    pageTabCapture();
+}
+
+/* ── DAFTAR TAB HALAMAN ───────────────────────────────────── */
+const PT_KEY = 'ts_page_tabs_v1';
+const pageTabs = { list: [{ tab: 'dashboard', sub: '', cabang: '', scroll: 0 }], active: 0 };
+let _ptBusy = false;
+
+function ptSave() {
+    try { localStorage.setItem(PT_KEY, JSON.stringify({ list: pageTabs.list, active: pageTabs.active })); } catch (e) { /* abaikan */ }
+}
+function ptLoad() {
+    try {
+        const d = JSON.parse(localStorage.getItem(PT_KEY) || 'null');
+        if (d && Array.isArray(d.list)) {
+            const ok = d.list.filter(t => t && TAB_META[t.tab]).slice(0, 12);
+            if (ok.length) { pageTabs.list = ok; pageTabs.active = Math.min(Math.max(0, d.active | 0), ok.length - 1); }
+        }
+    } catch (e) { /* abaikan */ }
+}
+
+/** Simpan posisi halaman saat ini ke tab yang aktif */
+function pageTabCapture() {
+    if (_ptBusy) return;
+    const t = pageTabs.list[pageTabs.active];
+    if (!t) return;
+    const pf = TAB_PREFIX[activeTab];
+    t.tab = activeTab;
+    t.sub = pf ? activeSubTab[pf] : '';
+    t.cabang = document.getElementById('gCabang')?.value || '';
+    renderPageTabs();
+    ptSave();
+}
+
+function ptLabel(t) {
+    const pf = TAB_PREFIX[t.tab];
+    let lbl = TAB_META[t.tab]?.title || t.tab;
+    if (pf && t.sub) {
+        const b = document.querySelector(`#${SUBNAV_ID[pf]} button[data-s="${t.sub}"]`);
+        if (b) lbl += ' › ' + b.textContent.trim();
+    }
+    return lbl;
+}
+
+function renderPageTabs() {
+    const el = document.getElementById('pageTabs');
+    if (!el) return;
+    const multi = pageTabs.list.length > 1;
+    el.innerHTML = pageTabs.list.map((t, i) => {
+        const lbl = ptLabel(t) + (t.cabang ? ' · ' + t.cabang : '');
+        const safe = lbl.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+        return `<div class="ptab${i === pageTabs.active ? ' on' : ''}" data-i="${i}" title="${safe}" role="tab">
+            <span class="ptab-lbl">${safe}</span>${multi ? '<span class="ptab-x" data-x="1" title="Tutup tab">×</span>' : ''}</div>`;
+    }).join('') + '<button type="button" class="ptab-add" id="ptAdd" title="Tab baru (menggandakan halaman ini)">＋</button>';
+}
+
+/** Tampilkan tab ke-i: pulihkan menu, sub-menu, cabang, scroll */
+async function aktifkanPageTab(i, awal) {
+    if (!awal) pageTabCapture();
+    const cur = pageTabs.list[pageTabs.active];
+    const c = document.querySelector('.content');
+    if (cur && c && !awal) cur.scroll = c.scrollTop;
+    pageTabs.active = i;
+    const t = pageTabs.list[i];
+    _ptBusy = true;
+    try {
+        const sel = document.getElementById('gCabang');
+        if (sel) sel.value = [...sel.options].some(o => o.value === t.cabang) ? t.cabang : '';
+        const pf = TAB_PREFIX[t.tab];
+        if (pf) {
+            const sub = t.sub && document.querySelector(`#${SUBNAV_ID[pf]} button[data-s="${CSS.escape(t.sub)}"]`) ? t.sub : activeSubTab[pf];
+            applySubTabUI(pf, sub);
+        }
+    } finally { _ptBusy = false; }
+    await setTab(t.tab);          // setTab → syncHash → pageTabCapture + render tab bar
+    if (c) c.scrollTop = t.scroll || 0;
+}
+
+/** Buka halaman (tab, sub) di TAB BARU di dalam aplikasi */
+async function bukaDiTabBaru(tab, sub) {
+    if (pageTabs.list.length >= 12) { if (typeof toast === 'function') toast('Maksimal 12 tab terbuka. Tutup salah satu dulu.', 'y'); return; }
+    pageTabCapture();
+    const c = document.querySelector('.content');
+    if (c) pageTabs.list[pageTabs.active].scroll = c.scrollTop;
+    const pf = TAB_PREFIX[tab];
+    pageTabs.list.push({
+        tab: tab || activeTab,
+        sub: sub || (pf ? activeSubTab[pf] : ''),
+        cabang: document.getElementById('gCabang')?.value || '',
+        scroll: 0,
+    });
+    await aktifkanPageTab(pageTabs.list.length - 1, true);
+}
+
+async function tutupPageTab(i) {
+    if (pageTabs.list.length <= 1) return;
+    pageTabCapture();
+    const wasActive = i === pageTabs.active;
+    pageTabs.list.splice(i, 1);
+    if (i < pageTabs.active) pageTabs.active--;
+    if (wasActive) {
+        pageTabs.active = Math.min(i, pageTabs.list.length - 1);
+        await aktifkanPageTab(pageTabs.active, true);
+    } else { renderPageTabs(); ptSave(); }
+}
+
+/** Baca hash URL → { tab, sub, cabang } atau null kalau tidak valid */
+function parseHash() {
+    const raw = (location.hash || '').replace(/^#\/?/, '');
+    if (!raw) return null;
+    const [path, qs] = raw.split('?');
+    const [tabRaw, subRaw] = path.split('/');
+    const tab = decodeURIComponent(tabRaw || '');
+    if (!TAB_META[tab]) return null;
+    const cabang = qs ? (new URLSearchParams(qs).get('cabang') || '') : '';
+    return { tab, sub: subRaw ? decodeURIComponent(subRaw) : '', cabang };
+}
+
+/** Tampilkan sub-tab di UI (tombol subnav + div) TANPA render ulang kontennya */
+function applySubTabUI(prefix, sub) {
+    activeSubTab[prefix] = sub;
+    document.querySelectorAll(`#${SUBNAV_ID[prefix]} button`).forEach(b =>
+        b.classList.toggle('on', b.dataset.s === sub)
+    );
+    document.querySelectorAll(`[id^="${prefix}-"]`).forEach(el => {
+        el.style.display = el.id === `${prefix}-${sub}` ? '' : 'none';
+    });
+}
+
+/** Dipanggil sekali saat start: pulihkan tab yang tersimpan; hash URL (kalau ada) menimpa tab aktif */
+async function bukaDariHash() {
+    ptLoad();
+    const h = parseHash();
+    if (h) {
+        const t = pageTabs.list[pageTabs.active];
+        t.tab = h.tab; t.sub = h.sub || ''; t.cabang = h.cabang || t.cabang || '';
+    }
+    await aktifkanPageTab(pageTabs.active, true);
+}
+
 /* ── PINDAH TAB UTAMA ─────────────────────────────────────── */
 
 /**
@@ -61,6 +224,9 @@ async function setTab(tab) {
 
     // Tutup sidebar mobile
     document.getElementById('sb').classList.remove('open');
+
+    // URL ikut menunjuk ke halaman ini (supaya bisa dibuka di tab baru)
+    syncHash();
 
     // Render konten tab
     await renderTabContent(tab);
@@ -95,19 +261,8 @@ async function renderTabContent(tab) {
  * @param {string} sub    - Nama sub-tab, misal 'jual', 'cabang'
  */
 async function setSubTab(prefix, sub) {
-    activeSubTab[prefix] = sub;
-
-    // Toggle class .on di subnav button
-    const navId = { an: 'snAnalisis', ms: 'snMaster', tx: 'snTrx', stok: 'snStok', jr: 'snJurnal', lp: 'snLap', sid: 'snSid', sk: 'snSinkron' }[prefix];
-    document.querySelectorAll(`#${navId} button`).forEach(b =>
-        b.classList.toggle('on', b.dataset.s === sub)
-    );
-
-    // Tampilkan div sub-tab yang sesuai, sembunyikan lainnya
-    document.querySelectorAll(`[id^="${prefix}-"]`).forEach(el => {
-        el.style.display = el.id === `${prefix}-${sub}` ? '' : 'none';
-    });
-
+    applySubTabUI(prefix, sub);
+    syncHash();
     await renderSubTabContent(prefix, sub);
 }
 
@@ -174,18 +329,61 @@ async function renderSubTabContent(prefix, sub) {
 
 /* ── EVENT LISTENERS ──────────────────────────────────────── */
 
-// Klik tombol nav di sidebar
+// Klik tombol nav di sidebar (ikon ↗ / Ctrl / Cmd / Shift = buka di tab baru)
+const _bukaBaru = e => e.ctrlKey || e.metaKey || e.shiftKey;
 document.querySelector('.sb-nav').addEventListener('click', e => {
     const btn = e.target.closest('.nb');
-    if (btn?.dataset.tab) setTab(btn.dataset.tab);
+    if (!btn?.dataset.tab) return;
+    if (e.target.closest('.nb-new') || _bukaBaru(e)) {
+        e.preventDefault();
+        bukaDiTabBaru(btn.dataset.tab);
+        return;
+    }
+    setTab(btn.dataset.tab);
+});
+// Klik tengah (roda mouse) pada menu samping = buka di tab baru
+document.querySelector('.sb-nav').addEventListener('auxclick', e => {
+    if (e.button !== 1) return;
+    const btn = e.target.closest('.nb');
+    if (!btn?.dataset.tab) return;
+    e.preventDefault();
+    bukaDiTabBaru(btn.dataset.tab);
+});
+// Cegah autoscroll bawaan browser saat klik tengah
+document.querySelector('.sb-nav').addEventListener('mousedown', e => { if (e.button === 1) e.preventDefault(); });
+
+// Ikon ↗ kecil di tiap menu samping (muncul saat di-hover)
+document.querySelectorAll('.sb-nav .nb').forEach(b => {
+    const ic = document.createElement('span');
+    ic.className = 'nb-new';
+    ic.title = 'Buka di tab baru';
+    ic.setAttribute('role', 'link');
+    ic.textContent = '↗';
+    b.appendChild(ic);
 });
 
 // Klik subnav — helper untuk semua subnav
 function wireSnav(navId, prefix) {
-    document.getElementById(navId)?.addEventListener('click', e => {
+    const nav = document.getElementById(navId);
+    if (!nav) return;
+    nav.addEventListener('click', e => {
         const btn = e.target.closest('button');
-        if (btn?.dataset.s) setSubTab(prefix, btn.dataset.s);
+        if (!btn?.dataset.s) return;
+        if (_bukaBaru(e)) {
+            e.preventDefault();
+            bukaDiTabBaru(activeTab, btn.dataset.s);
+            return;
+        }
+        setSubTab(prefix, btn.dataset.s);
     });
+    nav.addEventListener('auxclick', e => {
+        if (e.button !== 1) return;
+        const btn = e.target.closest('button');
+        if (!btn?.dataset.s) return;
+        e.preventDefault();
+        bukaDiTabBaru(activeTab, btn.dataset.s);
+    });
+    nav.addEventListener('mousedown', e => { if (e.button === 1) e.preventDefault(); });
 }
 
 wireSnav('snAnalisis', 'an');
@@ -197,12 +395,43 @@ wireSnav('snLap',      'lp');
 wireSnav('snSid',      'sid');
 wireSnav('snSinkron',  'sk');
 
+// Tombol "Tab Baru" di topbar = duplikat halaman yang sedang dibuka
+document.getElementById('btnTabBaru')?.addEventListener('click', () => bukaDiTabBaru(activeTab));
+
+// Deretan tab halaman: klik = pindah, × = tutup, ＋ = tab baru, klik tengah = tutup
+(() => {
+    const bar = document.getElementById('pageTabs');
+    if (!bar) return;
+    bar.addEventListener('click', e => {
+        if (e.target.closest('#ptAdd')) { bukaDiTabBaru(activeTab); return; }
+        const t = e.target.closest('.ptab');
+        if (!t) return;
+        const i = +t.dataset.i;
+        if (e.target.closest('[data-x]')) { tutupPageTab(i); return; }
+        if (i !== pageTabs.active) aktifkanPageTab(i);
+    });
+    bar.addEventListener('auxclick', e => {
+        if (e.button !== 1) return;
+        const t = e.target.closest('.ptab');
+        if (t) { e.preventDefault(); tutupPageTab(+t.dataset.i); }
+    });
+    bar.addEventListener('mousedown', e => { if (e.button === 1) e.preventDefault(); });
+    // Ctrl+Alt+T = tab baru, Ctrl+Alt+W = tutup tab aktif
+    document.addEventListener('keydown', e => {
+        if (!(e.ctrlKey && e.altKey)) return;
+        const k = e.key.toLowerCase();
+        if (k === 't') { e.preventDefault(); bukaDiTabBaru(activeTab); }
+        if (k === 'w') { e.preventDefault(); tutupPageTab(pageTabs.active); }
+    });
+})();
+
 // Hamburger mobile
 document.getElementById('ham').addEventListener('click', () =>
     document.getElementById('sb').classList.toggle('open')
 );
 
 // Re-render saat filter cabang berubah
-document.getElementById('gCabang').addEventListener('change', () =>
-    renderTabContent(activeTab)
-);
+document.getElementById('gCabang').addEventListener('change', () => {
+    syncHash();
+    renderTabContent(activeTab);
+});

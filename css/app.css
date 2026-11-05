@@ -83,7 +83,14 @@ a { color: var(--daun); }
 .nb { width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 9px; color: rgba(255,255,255,.6); font-size: 13.5px; font-weight: 500; margin-bottom: 2px; transition: background .15s, color .15s; text-align: left; border-left: 3px solid transparent; }
 .nb .ni { width: 22px; text-align: center; font-size: 15px; flex-shrink: 0; }
 .nb:hover { background: rgba(255,255,255,.07); color: rgba(255,255,255,.9); }
-.nb.on { background: rgba(200,151,58,.15); color: var(--emas); border-left-color: var(--emas); font-weight: 600; }
+.nb { position: relative; }
+.nb .nb-new { margin-left: auto; width: 22px; height: 22px; line-height: 22px; text-align: center; border-radius: 6px; font-size: 13px; opacity: 0; transition: opacity .15s, background .15s; flex-shrink: 0; cursor: pointer; }
+.nb:hover .nb-new, .nb:focus-visible .nb-new { opacity: .75; }
+.nb .nb-new:hover { opacity: 1; background: rgba(255,255,255,.18); }
+@media (hover: none) { .nb .nb-new { opacity: .55; } }
+.btn-tabbaru { border: 1px solid var(--brd); background: var(--putih); color: var(--ink2, var(--ink)); border-radius: 8px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background .15s, border-color .15s; }
+.btn-tabbaru:hover { background: var(--kertas); border-color: var(--daun2); color: var(--daun); }
+.nb.on { rgba(200,151,58,.15); color: var(--emas); border-left-color: var(--emas); font-weight: 600; }
 .nb.nb-pos { background: linear-gradient(90deg, rgba(46,125,90,.28), rgba(46,125,90,.08)); color: #d7f5e6; font-weight: 700; border-left-color: var(--daun2); margin-bottom: 4px; }
 .nb.nb-pos:hover { background: linear-gradient(90deg, rgba(46,125,90,.4), rgba(46,125,90,.14)); color: #fff; }
 .nb.nb-pos.on { background: linear-gradient(90deg, var(--daun2), var(--daun)); color: #fff; border-left-color: var(--emas); }
@@ -95,6 +102,18 @@ a { color: var(--daun); }
 
 /* ── MAIN ── */
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+
+/* ── TAB HALAMAN ── */
+.ptabs { display: flex; align-items: flex-end; gap: 3px; padding: 6px 20px 0; background: var(--putih); border-bottom: 1px solid var(--brd); overflow-x: auto; flex-shrink: 0; scrollbar-width: thin; }
+.ptab { display: flex; align-items: center; gap: 8px; max-width: 220px; min-width: 90px; padding: 7px 8px 7px 12px; font-size: 12px; font-weight: 600; color: var(--ink3); background: var(--kertas); border: 1px solid var(--brd); border-bottom: none; border-radius: 8px 8px 0 0; cursor: pointer; user-select: none; transition: background .15s, color .15s; }
+.ptab:hover { color: var(--ink); background: #fff; }
+.ptab.on { color: var(--daun); background: var(--putih); box-shadow: inset 0 2px 0 var(--emas); margin-bottom: -1px; padding-bottom: 8px; }
+.ptab-lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ptab-x { width: 18px; height: 18px; line-height: 17px; text-align: center; border-radius: 50%; font-size: 14px; flex-shrink: 0; opacity: .55; }
+.ptab-x:hover { opacity: 1; background: rgba(0,0,0,.1); }
+.ptab-add { border: none; background: transparent; color: var(--ink3); font-size: 18px; width: 30px; height: 28px; border-radius: 6px; cursor: pointer; margin-bottom: 2px; flex-shrink: 0; }
+.ptab-add:hover { background: var(--kertas); color: var(--daun); }
+@media (max-width: 820px) { .ptabs { padding: 6px 8px 0; } .ptab { max-width: 150px; } }
 
 /* ── TOPBAR ── */
 .topbar { background: var(--putih); border-bottom: 1px solid var(--brd); padding: 0 28px; height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-shrink: 0; box-shadow: var(--sh1); position: relative; z-index: 10; }

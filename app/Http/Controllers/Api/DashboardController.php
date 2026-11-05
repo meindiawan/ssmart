@@ -553,7 +553,7 @@ class DashboardController extends Controller
         // ── Mutasi paket (mutasi_kirim + detail) ──
         $headers = DB::table('mutasi_kirim')->where('status', '!=', 'Dibatalkan')->get();
         if ($headers->isNotEmpty()) {
-            $details = collect($headers->pluck('id')->all())->chunk(5000)->flatMap(fn($c) => DB::table('mutasi_kirim_detail')->whereIn('mutasi_kirim_id', $c->values()->all())->get())->groupBy('mutasi_kirim_id');
+            $details = DB::table('mutasi_kirim_detail')->whereIn('mutasi_kirim_id', $headers->pluck('id'))->get()->groupBy('mutasi_kirim_id');
             $nilaiMap = $hppSvc->nilaiKirimMutasi('mutasi_kirim_detail', $details->flatten()->pluck('id')->all());
 
             foreach ($headers as $h) {
@@ -618,8 +618,8 @@ class DashboardController extends Controller
         $headers = $hq->get();
         if ($headers->isEmpty()) return;
 
-        $details = collect($headers->pluck('id')->all())->chunk(5000)->flatMap(fn($c) => DB::table('jurnal_manual_detail')->whereIn('jurnal_manual_id', $c->values()->all())->orderBy('id')->get())
-            ->sortBy('id')->groupBy('jurnal_manual_id');
+        $details = DB::table('jurnal_manual_detail')->whereIn('jurnal_manual_id', $headers->pluck('id'))
+            ->orderBy('id')->get()->groupBy('jurnal_manual_id');
 
         foreach ($headers as $h) {
             $label = ($h->jenis === 'Memorial' ? 'Memorial' : 'Jurnal Manual') . ($h->kategori ? ' ' . $h->kategori : '');
@@ -879,6 +879,7 @@ class DashboardController extends Controller
             // laporan keseluruhan, bukan per shift/kasir — dikosongkan di mode itu.
             'hpp_rincian'               => $perKasir ? null : $this->hppRincian($cabang, $dari, $sampai, (float) $lr['hpp']),
             'barang_tanpa_modal'        => $tanpaModal,
+            'ringkasan_penjualan_hpp'   => $perKasir ? null : $this->ringkasanPenjualanHpp($cabang, $dari, $sampai),
             'barang_tidak_terdeteksi'   => $perKasir ? ['jumlah_kode' => 0, 'omzet' => 0] : $this->barangTidakTerdeteksiRingkas($cabang, $dari, $sampai),
             'filter_shift'              => $shift ?: null,
             'filter_kasir'              => $kasir ?: null,
@@ -936,49 +937,98 @@ class DashboardController extends Controller
         $awal  = $dari ? $nilaiPersediaan($dari, false) : 0.0;
         $akhir = $nilaiPersediaan($sampai ?: null, true);
 
-        $q = DB::table('hpp_kartu')->where('tipe', 'Pembelian');
-        if ($cabang) $q->where('cabang', $cabang);
-        if ($dari)   $q->where('tgl', '>=', $dari);
-        if ($sampai) $q->where('tgl', '<=', $sampai);
-        $pembelian = (float) $q->sum('nilai_masuk');
+        // PEMBELIAN diambil LANGSUNG dari Transaksi Pembelian (trx_beli) dengan
+        // filter cabang & tanggal yang sama persis dgn menu Transaksi ▸ Pembelian,
+        // bukan dari Kartu HPP (yang bisa meleset: diskon, baris berharga 0, dll).
+        //   bruto  = Σ (qty × harga − diskon)            ← angka di menu Pembelian
+        //   ppn    = porsi PPN Masukan baris "Kena PPN"   ← bukan bagian HPP
+        //   dpp    = bruto − ppn                          ← dipakai di rumus HPP
+        $tarif = $this->getTarif();
+        $div = 1 + $tarif;
+        $bq = DB::table('trx_beli')->leftJoin('barang', 'trx_beli.kode_barang', '=', 'barang.kode');
+        if ($cabang) $bq->where('trx_beli.cabang', $cabang);
+        if ($dari)   $bq->where('trx_beli.tgl', '>=', $dari);
+        if ($sampai) $bq->where('trx_beli.tgl', '<=', $sampai);
+        $tot = "(trx_beli.qty * trx_beli.harga - COALESCE(trx_beli.diskon, 0))";
+        $kena = "COALESCE(NULLIF(trx_beli.ppn, ''), barang.ppn) = 'Kena PPN'";
+        $b = $bq->selectRaw("COALESCE(SUM($tot), 0) AS bruto, COALESCE(SUM(CASE WHEN $kena THEN $tot - $tot / ? ELSE 0 END), 0) AS ppn", [$div])->first();
+        $pembelianBruto = (float) ($b->bruto ?? 0);
+        $ppnMasukan     = (float) ($b->ppn ?? 0);
+        $pembelian      = $pembelianBruto - $ppnMasukan;
 
         $lain = $hppJurnal - ($awal + $pembelian - $akhir);
 
         return [
             'persediaan_awal'  => round($awal),
             'pembelian'        => round($pembelian),
+            'pembelian_menu'   => round($pembelianBruto),   // = total di menu Transaksi ▸ Pembelian
+            'ppn_masukan'      => round($ppnMasukan),
             'penyesuaian_lain' => round($lain),
             'persediaan_akhir' => round($akhir),
             'hpp'              => round($hppJurnal),
         ];
     }
 
-    // Cari barang yang sudah terjual (ada di trx_jual, dalam rentang tanggal
-    // $dari–$sampai kalau diisi) tapi Harga Modal-nya masih 0/kosong di Master
-    // Barang. Item seperti ini membuat HPP-nya dihitung 0 sehingga LABA
-    // terlihat jauh lebih besar dari kenyataan (margin barang tsb "terbaca"
-    // 100%). Dipakai untuk menampilkan peringatan di Laporan Laba Rugi supaya
-    // gampang ditelusuri & diperbaiki.
-    public function barangTanpaModal(?string $cabang = null, ?string $dari = null, ?string $sampai = null): array
+    // Daftar barang TERJUAL yang HPP-nya Rp 0 — artinya belum ada Pembelian
+    // (Kartu HPP, per cabang, tanggal ≤ penjualan) yang menjadi sumber barang itu.
+    // Nilai "omzet" memakai dasar yang SAMA dengan Pendapatan di Laba Rugi:
+    // (qty × harga − diskon) lalu di-DPP-kan kalau Kena PPN. Jadi:
+    //   Pendapatan Penjualan − Σ omzet daftar ini = penjualan yang HPP-nya
+    //   berasal dari Pembelian (dan idealnya tidak melebihi nilai Pembelian).
+    private function exprDppJual(): string
     {
-        // Barang terjual yang HPP-nya 0 karena BELUM ADA PEMBELIAN (Kartu HPP).
+        $div = sprintf('%.8F', 1 + $this->getTarif());
+        return "((trx_jual.qty * trx_jual.harga - COALESCE(trx_jual.diskon, 0)) / "
+             . "CASE WHEN COALESCE(NULLIF(trx_jual.ppn, ''), barang.ppn) = 'Kena PPN' THEN $div ELSE 1 END)";
+    }
+
+    private function queryPenjualanHpp(?string $cabang, ?string $dari, ?string $sampai)
+    {
+        // join barang = sama persis dgn buildJurnal() (kode tak terdaftar tidak ikut)
         $q = DB::table('trx_jual')
             ->join('barang', 'trx_jual.kode_barang', '=', 'barang.kode')
             ->leftJoin('hpp_kartu', function ($j) {
                 $j->on('hpp_kartu.ref_id', '=', 'trx_jual.id')->where('hpp_kartu.ref_tabel', '=', 'trx_jual');
-            })
-            ->where(fn($w) => $w->whereNull('hpp_kartu.id')->orWhere('hpp_kartu.nilai_keluar', '<=', 0));
+            });
         if ($cabang) $q->where('trx_jual.cabang', $cabang);
         if ($dari)   $q->where('trx_jual.tgl', '>=', $dari);
         if ($sampai) $q->where('trx_jual.tgl', '<=', $sampai);
+        return $q;
+    }
 
-        return $q->selectRaw('barang.kode, barang.nama, SUM(trx_jual.qty) as qty_terjual, SUM(trx_jual.qty*trx_jual.harga) as omzet')
+    public function barangTanpaModal(?string $cabang = null, ?string $dari = null, ?string $sampai = null): array
+    {
+        $dpp = $this->exprDppJual();
+        $q = $this->queryPenjualanHpp($cabang, $dari, $sampai)
+            ->where(fn($w) => $w->whereNull('hpp_kartu.id')->orWhere('hpp_kartu.nilai_keluar', '<=', 0));
+
+        return $q->selectRaw("barang.kode, barang.nama, SUM(trx_jual.qty) as qty_terjual, SUM($dpp) as omzet")
             ->groupBy('barang.kode', 'barang.nama')
             ->orderByDesc('omzet')
             ->limit(3000)
             ->get()
             ->map(fn($r) => ['kode' => $r->kode, 'nama' => $r->nama, 'qty_terjual' => (float)$r->qty_terjual, 'omzet' => (float)$r->omzet])
             ->toArray();
+    }
+
+    // Ringkasan penjualan (DPP) menurut ada/tidaknya HPP — TANPA batas 3.000 baris
+    // seperti daftar di atas, supaya total pasti lengkap.
+    public function ringkasanPenjualanHpp(?string $cabang = null, ?string $dari = null, ?string $sampai = null): array
+    {
+        $dpp = $this->exprDppJual();
+        $nol = "(hpp_kartu.id IS NULL OR hpp_kartu.nilai_keluar <= 0)";
+        $r = $this->queryPenjualanHpp($cabang, $dari, $sampai)
+            ->selectRaw("COALESCE(SUM($dpp),0) AS total, COALESCE(SUM(CASE WHEN $nol THEN $dpp ELSE 0 END),0) AS hpp0, "
+                . "COUNT(DISTINCT CASE WHEN $nol THEN trx_jual.kode_barang END) AS jml_barang_hpp0")
+            ->first();
+        $total = (float) ($r->total ?? 0);
+        $hpp0  = (float) ($r->hpp0 ?? 0);
+        return [
+            'penjualan_dpp'   => round($total),
+            'hpp0_dpp'        => round($hpp0),
+            'ber_hpp_dpp'     => round($total - $hpp0),   // penjualan yang HPP-nya dari Pembelian
+            'jml_barang_hpp0' => (int) ($r->jml_barang_hpp0 ?? 0),
+        ];
     }
 
     public function neraca(Request $request)
