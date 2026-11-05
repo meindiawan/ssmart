@@ -23,6 +23,9 @@
     {{-- Tanggal hari ini — diisi JS --}}
     <div style="font-size:12px;color:var(--ink3);" id="todayLabel"></div>
 
+    {{-- Buka halaman yang sedang aktif di tab browser baru --}}
+    <button type="button" class="btn-tabbaru" id="btnTabBaru" title="Buka halaman ini di tab baru (atau Ctrl+klik / klik tengah pada menu)">↗ Tab Baru</button>
+
     {{-- Indikator koneksi ke API Laravel --}}
     <div class="conn-status" id="connStatus">
       <span class="conn-dot"></span>

@@ -97,16 +97,16 @@ window.lapLihatTanpaModal = () => {
     const list = window._lrTanpaModal || [];
     const totOmzet = list.reduce((a, b) => a + Number(b.omzet || 0), 0);
     openM(`
-    <div class="mhd"><h3>⚠️ ${list.length} Barang Terjual Tanpa HPP (belum ada pembelian)</h3><button class="mclose" onclick="closeM()">×</button></div>
+    <div class="mhd"><h3>⚠️ ${list.length} Barang Terjual dengan HPP Rp 0 (belum ada Pembelian)</h3><button class="mclose" onclick="closeM()">×</button></div>
     <div class="mbd">
         <div class="note note-y" style="margin-bottom:10px;"><span>ℹ️</span>
-            <span>Urut dari penjualan (DPP) terbesar. Total penjualan DPP tanpa HPP <strong>${R(totOmzet)}</strong>.
-            HPP muncul setelah ada Pembelian/Barang Masuk (atau mutasi) yang menutupi barang tsb.</span></div>
+            <span>Urut dari omzet terbesar (DPP, setelah diskon — sama dasarnya dengan Pendapatan). Total omzet barang-barang ini <strong>${R(totOmzet)}</strong>.
+            HPP baru terbentuk setelah barang itu punya Pembelian (di cabang yang sama, tanggal ≤ penjualan).</span></div>
         <input class="finput" id="tmCari" placeholder="🔍 Cari kode atau nama barang…" style="width:100%;margin-bottom:8px;"
                oninput="lapFilterTanpaModal(this.value)">
         <div style="max-height:55vh;overflow:auto;">
             <table>
-                <thead><tr><th>#</th><th>Kode</th><th>Nama Barang</th><th class="r">Terjual (tanpa HPP)</th><th class="r">Penjualan DPP</th></tr></thead>
+                <thead><tr><th>#</th><th>Kode</th><th>Nama Barang</th><th class="r">Terjual</th><th class="r">Omzet</th></tr></thead>
                 <tbody id="tmBody">${lapBarisTanpaModal(list)}</tbody>
             </table>
         </div>
@@ -468,19 +468,26 @@ async function renderLabaRugi() {
         <div class="note note-y" style="margin-bottom:12px;">
             <span class="note-ico">⚠️</span>
             <span>
-                <strong>${r.barang_tanpa_modal.length} barang</strong> terjual <strong>tanpa HPP (Rp 0)</strong> karena belum ada
-                <strong>Pembelian</strong> yang menutupinya (HPP hanya dari Pembelian, sampai tanggal penjualan, di cabang yang sama).
-                ${r.penjualan_tanpa_hpp ? `<br>Penjualan (DPP) tanpa HPP: <strong>${R(r.penjualan_tanpa_hpp.dpp_tanpa_hpp)}</strong> ·
-                Penjualan (DPP) yang sudah punya HPP dari pembelian: <strong>${R(r.penjualan_tanpa_hpp.dpp_ada_hpp)}</strong>
-                (dari total Pendapatan penjualan ${R(r.penjualan_tanpa_hpp.dpp_semua)}).` : ''}
-                <br><strong>Laba Kotor/Bersih di bawah ini bisa lebih besar dari kenyataan</strong> selama pembelian barang-barang ini
-                belum diinput/diimpor (cek juga mutasi antar cabang). Angka di daftar = DPP (basis sama dengan Pendapatan).
+                <strong>${r.barang_tanpa_modal.length} barang</strong> sudah terjual tapi <strong>belum ada Pembelian</strong>
+                (di cabang & tanggal penjualannya) — sehingga HPP barang ini terhitung Rp 0 dan
+                <strong>Laba Kotor/Bersih di bawah ini jadi lebih besar dari kenyataan</strong>.
+                Input/Import Pembelian barang-barang berikut (HPP dihitung dari Pembelian, bukan dari Harga Modal Master),
+                lalu daftar ini otomatis berkurang.
+                ${r.ringkasan_penjualan_hpp ? (() => { const k = r.ringkasan_penjualan_hpp, hr = r.hpp_rincian;
+                    return `<div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,.04);border-radius:6px;font-size:12px;line-height:1.7;">
+                        <strong>Rekonsiliasi (semua nilai DPP, sama dasarnya dengan Pendapatan):</strong><br>
+                        Penjualan barang: <strong>${R(k.penjualan_dpp)}</strong><br>
+                        − Terjual dengan HPP Rp 0 (daftar di bawah): <strong>${R(k.hpp0_dpp)}</strong><br>
+                        = Terjual dari Pembelian (HPP &gt; 0): <strong>${R(k.ber_hpp_dpp)}</strong>
+                        ${hr ? `<br>Pembelian periode ini (DPP): <strong>${R(hr.pembelian)}</strong> <span style="color:var(--ink3);">— penjualan ber-HPP seharusnya tidak jauh di atas angka ini kalau periode ini awal pencatatan.</span>` : ''}
+                    </div>`; })() : ''}
+                <div style="margin-top:6px;font-size:12px;">
+                    Daftar teratas (omzet DPP):
+                </div>
                 <div style="margin-top:6px;font-size:12px;max-height:120px;overflow-y:auto;">
-                    ${r.barang_tanpa_modal.slice(0,15).map(b => `${esc(b.kode)} – ${esc(b.nama)} (terjual ${b.qty_terjual.toLocaleString('id-ID')}, DPP ${R(b.omzet)})`).join('<br>')}
+                    ${r.barang_tanpa_modal.slice(0,15).map(b => `${esc(b.kode)} – ${esc(b.nama)} (terjual ${b.qty_terjual.toLocaleString('id-ID')}, omzet ${R(b.omzet)})`).join('<br>')}
                     ${r.barang_tanpa_modal.length > 15 ? `<br><a href="javascript:void(0)" style="font-weight:700;text-decoration:underline;cursor:pointer;" onclick="lapLihatTanpaModal()" title="Klik untuk lihat semua barangnya">… dan ${r.barang_tanpa_modal.length - 15} lainnya (klik untuk lihat semua)</a>` : ''}
                 </div>
-                <button class="btn btn-sm" style="margin-top:8px;" onclick="perbaikiHppDariNota(this)">🔧 Perbaiki HPP dari Nota SID</button>
-                <button class="btn btn-sm" style="margin-top:8px;margin-left:6px;" onclick="isiModalDariBeli(this)">📦 Isi dari rata-rata Harga Beli</button>
             </span>
         </div>` : ''}
         <div class="box">
@@ -515,6 +522,7 @@ async function renderLabaRugi() {
                             const tersedia = h.persediaan_awal + h.pembelian + h.penyesuaian_lain;
                             const sub = 'padding-left:28px;';
                             const sub2 = 'padding-left:44px;';
+                            const pMenu = (h.pembelian_menu !== undefined) ? h.pembelian_menu : h.pembelian;
                             return `
                         <tr style="background:var(--kertas);">
                             <td colspan="2" style="font-weight:700;padding:12px 14px;text-transform:uppercase;font-size:11px;letter-spacing:.06em;color:var(--daun);">
@@ -522,10 +530,8 @@ async function renderLabaRugi() {
                             </td>
                         </tr>
                         <tr><td style="${sub2}">Persediaan Awal <span style="font-size:11px;color:var(--ink3);">(nilai stok ${f.dari ? 'per ' + esc(fmtTgl(f.dari)) + ' sebelum transaksi' : 'awal'})</span></td><td class="r">${R(h.persediaan_awal)}</td></tr>
-                        <tr><td style="${sub2}">(+) Pembelian <span style="font-size:11px;color:var(--ink3);">(DPP: bersih diskon, tanpa PPN Masukan)</span></td><td class="r">${R(h.pembelian)}</td></tr>
-                        ${h.pembelian_faktur != null ? `<tr><td colspan="2" style="padding-left:60px;font-size:11px;color:var(--ink3);">
-                            Cocokkan dgn menu Pembelian: total faktur ${R(h.pembelian_faktur)} − PPN Masukan ${R(h.pembelian_ppn_masukan)}${h.pembelian_tak_terdeteksi ? ` − pembelian barang yg belum ada di Master Barang ${R(h.pembelian_tak_terdeteksi)}` : ''} = ${R(h.pembelian)}
-                        </td></tr>` : ''}
+                        <tr class="row-click" title="Angka ini sama dengan total di menu Transaksi ▸ Pembelian untuk periode & cabang yang sama" style="cursor:help;"><td style="${sub2}">(+) Pembelian <span style="font-size:11px;color:var(--ink3);">(sesuai menu Transaksi ▸ Pembelian, sudah dikurangi diskon)</span></td><td class="r">${R(pMenu)}</td></tr>
+                        ${Math.abs(h.ppn_masukan || 0) > 0.5 ? `<tr><td style="${sub2}">(−) PPN Masukan <span style="font-size:11px;color:var(--ink3);">(dikreditkan, bukan bagian HPP)</span></td><td class="r">(${R(h.ppn_masukan)})</td></tr>` : ''}
                         ${Math.abs(h.penyesuaian_lain) > 0.5 ? `<tr><td style="${sub2}">(${h.penyesuaian_lain >= 0 ? '+' : '−'}) Penyesuaian lain <span style="font-size:11px;color:var(--ink3);">(retur, barang masuk/keluar, mutasi, stok opname)</span></td><td class="r">${R(Math.abs(h.penyesuaian_lain))}</td></tr>` : ''}
                         <tr style="font-weight:600;"><td style="${sub}">Barang Tersedia untuk Dijual</td><td class="r">${R(tersedia)}</td></tr>
                         <tr><td style="${sub2}">(−) Persediaan Akhir <span style="font-size:11px;color:var(--ink3);">(nilai stok ${f.sampai ? 'per ' + esc(fmtTgl(f.sampai)) : 'saat ini'})</span></td><td class="r">(${R(h.persediaan_akhir)})</td></tr>

@@ -205,7 +205,6 @@ class MasterController extends Controller
             'satuan1' => 'PCS', 'isi' => 1, 'isi3' => 1, 'stok_min' => 0, 'stok_max' => 0,
         ], array_filter($data, fn($v) => !is_null($v)));
         $id = DB::table('barang')->insertGetId(array_merge($data, ['created_at' => now(), 'updated_at' => now()]));
-        app(\App\Services\HppService::class)->rebuildItem((string) $data['kode']); // transaksi lama dgn kode ini (kalau ada) langsung ikut HPP
 
         if ($cabangBarang) {
             BarangCabangService::simpanHarga($data['kode'], $cabangBarang, [
@@ -608,8 +607,6 @@ class MasterController extends Controller
                 $gagal[] = "{$kode}: " . $e->getMessage();
             }
         }
-        // Barang baru dari import: transaksi lama berkode ini (sebelumnya tidak terdeteksi) ikut HPP
-        try { app(\App\Services\HppService::class)->rebuildYangTertinggal(); } catch (\Throwable $e) { /* jangan gagalkan import */ }
         return response()->json([
             'added'      => $added,
             'updated'    => $updated,

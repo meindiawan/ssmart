@@ -36,6 +36,78 @@ const activeSubTab = {
     sk: 'jual',
 };
 
+
+/* ── BUKA DI TAB BARU (deep-link lewat hash URL) ──────────────
+   Format:  #<tab>            mis. #laporan
+            #<tab>/<sub>      mis. #transaksi/beli
+            ...?cabang=Nama   (opsional) filter cabang ikut terbawa
+   Setiap perpindahan tab/sub-tab memperbarui hash (tanpa menambah
+   riwayat browser), jadi URL di address bar selalu menunjuk ke halaman
+   yang sedang dibuka — bisa di-copy, di-bookmark, atau dibuka di tab baru.
+   Cara membuka di tab baru: klik ikon ↗ di menu samping, Ctrl/Cmd/Shift+klik
+   (atau klik tengah) pada menu/sub-menu, atau tombol "Tab Baru" di topbar. */
+const TAB_PREFIX = { analisis: 'an', master: 'ms', transaksi: 'tx', stok: 'stok', jurnal: 'jr', laporan: 'lp', sid: 'sid', sinkron: 'sk' };
+const SUBNAV_ID  = { an: 'snAnalisis', ms: 'snMaster', tx: 'snTrx', stok: 'snStok', jr: 'snJurnal', lp: 'snLap', sid: 'snSid', sk: 'snSinkron' };
+
+function buildHash(tab, sub) {
+    let h = '#' + encodeURIComponent(tab);
+    const pf = TAB_PREFIX[tab];
+    const s  = sub || (pf ? activeSubTab[pf] : '');
+    if (pf && s) h += '/' + encodeURIComponent(s);
+    const cab = document.getElementById('gCabang')?.value;
+    if (cab) h += '?cabang=' + encodeURIComponent(cab);
+    return h;
+}
+
+function buildTabUrl(tab, sub) {
+    return location.origin + location.pathname + location.search + buildHash(tab, sub);
+}
+
+function syncHash() {
+    try { history.replaceState(null, '', buildHash(activeTab)); } catch (e) { /* abaikan */ }
+}
+
+function bukaDiTabBaru(tab, sub) {
+    const w = window.open(buildTabUrl(tab, sub), '_blank', 'noopener');
+    if (!w && typeof toast === 'function') toast('Pop-up diblokir browser. Izinkan pop-up untuk situs ini.', 'y');
+}
+
+/** Baca hash URL → { tab, sub, cabang } atau null kalau tidak valid */
+function parseHash() {
+    const raw = (location.hash || '').replace(/^#\/?/, '');
+    if (!raw) return null;
+    const [path, qs] = raw.split('?');
+    const [tabRaw, subRaw] = path.split('/');
+    const tab = decodeURIComponent(tabRaw || '');
+    if (!TAB_META[tab]) return null;
+    const cabang = qs ? (new URLSearchParams(qs).get('cabang') || '') : '';
+    return { tab, sub: subRaw ? decodeURIComponent(subRaw) : '', cabang };
+}
+
+/** Tampilkan sub-tab di UI (tombol subnav + div) TANPA render ulang kontennya */
+function applySubTabUI(prefix, sub) {
+    activeSubTab[prefix] = sub;
+    document.querySelectorAll(`#${SUBNAV_ID[prefix]} button`).forEach(b =>
+        b.classList.toggle('on', b.dataset.s === sub)
+    );
+    document.querySelectorAll(`[id^="${prefix}-"]`).forEach(el => {
+        el.style.display = el.id === `${prefix}-${sub}` ? '' : 'none';
+    });
+}
+
+/** Dipanggil sekali saat start: buka tab/sub sesuai hash (default dashboard) */
+async function bukaDariHash() {
+    const h = parseHash();
+    if (!h) { await setTab('dashboard'); return; }
+    const sel = document.getElementById('gCabang');
+    if (sel && h.cabang && [...sel.options].some(o => o.value === h.cabang)) sel.value = h.cabang;
+    const pf = TAB_PREFIX[h.tab];
+    if (pf && h.sub && document.querySelector(`#${SUBNAV_ID[pf]} button[data-s="${CSS.escape(h.sub)}"]`)) {
+        applySubTabUI(pf, h.sub);
+    }
+    await setTab(h.tab);
+}
+
 /* ── PINDAH TAB UTAMA ─────────────────────────────────────── */
 
 /**
@@ -61,6 +133,9 @@ async function setTab(tab) {
 
     // Tutup sidebar mobile
     document.getElementById('sb').classList.remove('open');
+
+    // URL ikut menunjuk ke halaman ini (supaya bisa dibuka di tab baru)
+    syncHash();
 
     // Render konten tab
     await renderTabContent(tab);
@@ -95,19 +170,8 @@ async function renderTabContent(tab) {
  * @param {string} sub    - Nama sub-tab, misal 'jual', 'cabang'
  */
 async function setSubTab(prefix, sub) {
-    activeSubTab[prefix] = sub;
-
-    // Toggle class .on di subnav button
-    const navId = { an: 'snAnalisis', ms: 'snMaster', tx: 'snTrx', stok: 'snStok', jr: 'snJurnal', lp: 'snLap', sid: 'snSid', sk: 'snSinkron' }[prefix];
-    document.querySelectorAll(`#${navId} button`).forEach(b =>
-        b.classList.toggle('on', b.dataset.s === sub)
-    );
-
-    // Tampilkan div sub-tab yang sesuai, sembunyikan lainnya
-    document.querySelectorAll(`[id^="${prefix}-"]`).forEach(el => {
-        el.style.display = el.id === `${prefix}-${sub}` ? '' : 'none';
-    });
-
+    applySubTabUI(prefix, sub);
+    syncHash();
     await renderSubTabContent(prefix, sub);
 }
 
@@ -174,18 +238,61 @@ async function renderSubTabContent(prefix, sub) {
 
 /* ── EVENT LISTENERS ──────────────────────────────────────── */
 
-// Klik tombol nav di sidebar
+// Klik tombol nav di sidebar (ikon ↗ / Ctrl / Cmd / Shift = buka di tab baru)
+const _bukaBaru = e => e.ctrlKey || e.metaKey || e.shiftKey;
 document.querySelector('.sb-nav').addEventListener('click', e => {
     const btn = e.target.closest('.nb');
-    if (btn?.dataset.tab) setTab(btn.dataset.tab);
+    if (!btn?.dataset.tab) return;
+    if (e.target.closest('.nb-new') || _bukaBaru(e)) {
+        e.preventDefault();
+        bukaDiTabBaru(btn.dataset.tab);
+        return;
+    }
+    setTab(btn.dataset.tab);
+});
+// Klik tengah (roda mouse) pada menu samping = buka di tab baru
+document.querySelector('.sb-nav').addEventListener('auxclick', e => {
+    if (e.button !== 1) return;
+    const btn = e.target.closest('.nb');
+    if (!btn?.dataset.tab) return;
+    e.preventDefault();
+    bukaDiTabBaru(btn.dataset.tab);
+});
+// Cegah autoscroll bawaan browser saat klik tengah
+document.querySelector('.sb-nav').addEventListener('mousedown', e => { if (e.button === 1) e.preventDefault(); });
+
+// Ikon ↗ kecil di tiap menu samping (muncul saat di-hover)
+document.querySelectorAll('.sb-nav .nb').forEach(b => {
+    const ic = document.createElement('span');
+    ic.className = 'nb-new';
+    ic.title = 'Buka di tab baru';
+    ic.setAttribute('role', 'link');
+    ic.textContent = '↗';
+    b.appendChild(ic);
 });
 
 // Klik subnav — helper untuk semua subnav
 function wireSnav(navId, prefix) {
-    document.getElementById(navId)?.addEventListener('click', e => {
+    const nav = document.getElementById(navId);
+    if (!nav) return;
+    nav.addEventListener('click', e => {
         const btn = e.target.closest('button');
-        if (btn?.dataset.s) setSubTab(prefix, btn.dataset.s);
+        if (!btn?.dataset.s) return;
+        if (_bukaBaru(e)) {
+            e.preventDefault();
+            bukaDiTabBaru(activeTab, btn.dataset.s);
+            return;
+        }
+        setSubTab(prefix, btn.dataset.s);
     });
+    nav.addEventListener('auxclick', e => {
+        if (e.button !== 1) return;
+        const btn = e.target.closest('button');
+        if (!btn?.dataset.s) return;
+        e.preventDefault();
+        bukaDiTabBaru(activeTab, btn.dataset.s);
+    });
+    nav.addEventListener('mousedown', e => { if (e.button === 1) e.preventDefault(); });
 }
 
 wireSnav('snAnalisis', 'an');
@@ -197,12 +304,16 @@ wireSnav('snLap',      'lp');
 wireSnav('snSid',      'sid');
 wireSnav('snSinkron',  'sk');
 
+// Tombol "Tab Baru" di topbar = duplikat halaman yang sedang dibuka
+document.getElementById('btnTabBaru')?.addEventListener('click', () => bukaDiTabBaru(activeTab));
+
 // Hamburger mobile
 document.getElementById('ham').addEventListener('click', () =>
     document.getElementById('sb').classList.toggle('open')
 );
 
 // Re-render saat filter cabang berubah
-document.getElementById('gCabang').addEventListener('change', () =>
-    renderTabContent(activeTab)
-);
+document.getElementById('gCabang').addEventListener('change', () => {
+    syncHash();
+    renderTabContent(activeTab);
+});

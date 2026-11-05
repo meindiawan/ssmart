@@ -131,7 +131,6 @@ window.APP_CONFIG = {
 <script src="{{ asset('js/modules/laporan.js') }}?v={{ filemtime(public_path('js/modules/laporan.js')) }}"></script>       {{-- Neraca saldo, L/R, neraca, rekap PPN --}}
 <script src="{{ asset('js/modules/laba-rugi-lengkap.js') }}?v={{ filemtime(public_path('js/modules/laba-rugi-lengkap.js')) }}"></script> {{-- Laba Rugi Lengkap: per cabang, shift, kasir, tanggal + download PDF/Excel --}}
 <script src="{{ asset('js/modules/sinkronisasi.js') }}?v={{ filemtime(public_path('js/modules/sinkronisasi.js')) }}"></script> {{-- Sinkronisasi Data: cek/compare hasil import vs data tersimpan --}}
-<script src="{{ asset('js/modules/deeplink.js') }}?v={{ filemtime(public_path('js/modules/deeplink.js')) }}"></script>   {{-- Buka di tab baru (Ctrl+klik / klik-kanan / tombol di modal) --}}
 <script src="{{ asset('js/modules/app.js') }}?v={{ filemtime(public_path('js/modules/app.js')) }}"></script>           {{-- Bootstrap: init, load master data, splash --}}
 
 </body>
