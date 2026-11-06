@@ -2227,8 +2227,10 @@ window.doImportPenjualan = async () => {
     try {
         let totalAdded = 0, totalDitandai = 0, totalSkipped = 0, tidakDitemukan = [], totalNominal = 0, kasirTanpaKolom = false, totalPelBaru = 0;
         const notaDobel = []; let totalBarisDobel = 0; // FIX: dulu tidak dideklarasikan → ReferenceError setelah batch pertama
-        for (let i = 0; i < items.length; i += 200) {
-            const batch = items.slice(i, i + 200).map(r => ({
+        // Potong batch tanpa membelah 1 nota (No. Referensi+Tanggal+Cabang) — lihat potongBatchPerNota()
+        const kunciNotaJ = r => (r.no_nota || '') + '|' + (r.tglRow || tgl || '') + '|' + (r.cabangRow || cabang || '');
+        for (const potongJ of potongBatchPerNota(items, kunciNotaJ, 200)) {
+            const batch = potongJ.map(r => ({
                 tgl: r.tglRow || tgl, kode_barang: r.kode_barang, qty: r.qty, harga: r.harga,
                 bayar: r.bayarRow || bayar,
                 satuan: r.satuan, // hasil deteksi dari barcode yang cocok — biar backend konversi qty×isi kalau ini satuan besar (KARTON)
@@ -2255,7 +2257,8 @@ window.doImportPenjualan = async () => {
         await catatImportSelesai('jual', cabangLabel, cekDobel.hash, items.length, totalNominal);
         closeM();
         toast(`Import selesai: ${totalAdded} transaksi masuk` + (totalSkipped ? `, ${totalSkipped} dilewati (baris tanpa kode)` : '') + (totalPelBaru ? `, ${totalPelBaru} pelanggan baru dibuat` : ''));
-        if (notaDobel.length) toast(`${notaDobel.length} nota sudah ada → dilewati (${totalBarisDobel} baris): ${notaDobel.slice(0,5).join(', ')}`, 'y');
+        if (notaDobel.length) toast(`${notaDobel.length} nota SUDAH ADA (No. Referensi + Tanggal + Cabang sama) → dilewati agar tidak dobel (${totalBarisDobel} baris): ${notaDobel.slice(0,5).join(', ')}${notaDobel.length > 5 ? ', …' : ''}`, 'y');
+        if (totalAdded === 0 && notaDobel.length) toast('Tidak ada nota baru — semua nota di file ini sudah pernah masuk, data & stok tidak berubah.', 'y');
         if (kasirTanpaKolom) toast('Kolom Kasir/Shift belum ada di database, jadi akun kasir tidak tersimpan. Jalankan "php artisan migrate" lalu import ulang agar laporan per shift terisi.', 'y');
         if (totalDitandai) {
             toast(`${totalDitandai} dari transaksi tersebut kode/barcode-nya tidak dikenal — tetap masuk tapi ditandai "⚠️ Kode tidak dikenal" di riwayat, mis: ${tidakDitemukan.slice(0,5).join(', ')}`, 'y');
@@ -2657,22 +2660,9 @@ window.doImportPembelian = async () => {
         let totalAdded = 0, totalDitandai = 0, totalSkipped = 0, tidakDitemukan = [], totalNominal = 0, totalBarangBaru = 0;
         const cabangGagal = [];
         // Potong batch ±200 baris TANPA membelah 1 nota (No. Faktur+Tanggal+Cabang) ke dua
-        // batch — backend melewati nota yang sudah ada, jadi nota yang terbelah bisa
-        // salah dianggap dobel. Baris 1 nota juga dikelompokkan dulu (urutan nota tetap).
+        // batch — lihat potongBatchPerNota() di helpers.js.
         const kunciNota = r => (r.no_nota || '') + '|' + (r.tglRow || tgl || '') + '|' + (r.cabangRow || cabang || '');
-        const urutNota = [], petaNota = {};
-        items.forEach((r, idx) => {
-            if (!r.no_nota) { urutNota.push([r]); return; }
-            const k = kunciNota(r);
-            if (!petaNota[k]) { petaNota[k] = []; urutNota.push(petaNota[k]); }
-            petaNota[k].push(r);
-        });
-        const potongan = []; let sedang = [];
-        urutNota.forEach(grup => {
-            if (sedang.length && sedang.length + grup.length > 200) { potongan.push(sedang); sedang = []; }
-            sedang = sedang.concat(grup);
-        });
-        if (sedang.length) potongan.push(sedang);
+        const potongan = potongBatchPerNota(items, kunciNota, 200);
         const notaDobel = []; let totalBarisDobel = 0;
         for (const potong of potongan) {
             const batch = potong.map(r => ({
@@ -2688,6 +2678,8 @@ window.doImportPembelian = async () => {
             }));
             const res = await apiPost('/transaksi/beli/import', { cabang: cabang || undefined, items: batch, supplier: supplier || undefined, buat_barang_baru: !!buatBarang });
             (res.cabang_tidak_valid || []).forEach(x => { if (!cabangGagal.includes(x)) cabangGagal.push(x); });
+            totalBarisDobel += (res.baris_dobel_dilewati || 0);
+            (res.nota_dobel_dilewati || []).forEach(x => { if (!notaDobel.includes(x)) notaDobel.push(x); });
             totalAdded    += (res.added    || 0);
             totalBarangBaru += (res.barang_baru || 0);
             totalDitandai += (res.ditandai || 0);
@@ -2699,6 +2691,7 @@ window.doImportPembelian = async () => {
         closeM();
         toast(`Import selesai: ${totalAdded} transaksi masuk` + (totalSkipped ? `, ${totalSkipped} dilewati (baris tanpa kode / cabang tidak dikenal)` : ''));
         if (notaDobel.length) toast(`${notaDobel.length} nota SUDAH ADA (No. Faktur + Tanggal + Cabang sama) → dilewati agar tidak dobel (${totalBarisDobel} baris): ${notaDobel.slice(0,5).join(', ')}${notaDobel.length > 5 ? ', …' : ''}`, 'y');
+        if (totalAdded === 0 && notaDobel.length) toast('Tidak ada nota baru — semua nota di file ini sudah pernah masuk, data & stok tidak berubah.', 'y');
         if (totalBarangBaru) toast(`${totalBarangBaru} barang baru otomatis dibuat di Master Barang (harga jual = HPP sementara) — silakan lengkapi kategori & harga jual di Data Master ▸ Barang`, 'y');
         if (cabangGagal.length) toast(`Cabang tidak dikenal, baris dilewati: ${cabangGagal.join(', ')}`, 'y');
         if (totalDitandai) {

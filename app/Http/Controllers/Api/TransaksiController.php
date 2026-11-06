@@ -1303,13 +1303,16 @@ class TransaksiController extends Controller
         }
         $bolehMinus = $this->stokBolehMinus();
         $added = 0; $ditandai = 0; $skipped = 0; $tidakDitemukan = [];
-        // PROTEKSI NOTA DOBEL (khusus Pembelian): nota dgn No. Faktur + Tanggal + Cabang
+        // PROTEKSI NOTA DOBEL (Penjualan & Pembelian): nota dgn No. Referensi/Faktur + Tanggal + Cabang
         // yang SUDAH ada di database dilewati seluruhnya — import ulang file/tanggal yang
         // sama tidak menggandakan nota; hanya nomor faktur yang belum ada yang masuk.
         // Snapshot diambil SEBELUM baris pertama disisipkan, jadi baris-baris 1 nota
         // yang sama di batch ini tetap masuk semua. Baris tanpa No. Faktur tidak dicek
         // (nomornya dibuat otomatis). Matikan dgn lewati_nota_ada=false.
-        $lewatiNotaAda = $table === 'trx_beli' && $request->boolean('lewati_nota_ada', true);
+        // CATATAN: 1 nota TIDAK boleh terbelah ke dua request — snapshot dibuat per request,
+        // jadi sisa baris nota yang sudah sebagian masuk akan dianggap "sudah ada". Frontend
+        // memotong batch per nota (lihat potongBatchPerNota() di helpers.js).
+        $lewatiNotaAda = $request->boolean('lewati_nota_ada', true);
         $notaAda = [];          // "no_nota|tgl|cabang" => true (sudah ada di DB sebelum batch ini)
         $notaDilewati = [];     // no_nota => true
         $barisDobel = 0;

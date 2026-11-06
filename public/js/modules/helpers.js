@@ -74,9 +74,38 @@ async function cekDanKonfirmasiImportDobel(jenis, cabang, rows) {
     const info = res.info;
     const pesan = `⚠️ Data yang persis sama (${info.jumlah_baris} baris, total ${R(info.total_nominal)}) `
         + `sudah pernah di-import pada ${new Date(info.kapan).toLocaleString('id-ID')}.\n\n`
-        + `Kalau ini bukan sengaja diimport ulang, klik Batal.\n`
-        + `Tetap lanjutkan import ini sekali lagi?`;
+        + `Nota yang nomornya SUDAH ADA (No. Referensi/Faktur + Tanggal + Cabang sama) akan otomatis dilewati, jadi tidak akan dobel. `
+        + `Baris tanpa No. Referensi tidak bisa dicek dan tetap masuk.\n\n`
+        + `Lanjutkan proses import?`;
     return { lanjut: window.confirm(pesan), hash: res.hash };
+}
+
+/**
+ * Potong baris import jadi beberapa batch (±ukuran baris) TANPA membelah 1 nota
+ * (No. Referensi/Faktur + Tanggal + Cabang) ke dua batch. Backend melewati nota yang
+ * sudah ada per request; kalau 1 nota terbelah, sisa barisnya bisa salah dianggap dobel.
+ * Baris tanpa no_nota = 1 baris 1 grup. Urutan nota tetap seperti di file.
+ * @param {Array<object>} items
+ * @param {(r:object)=>string} kunciNota - kunci unik nota untuk baris r
+ * @param {number} [ukuran=200]
+ * @returns {Array<Array<object>>}
+ */
+function potongBatchPerNota(items, kunciNota, ukuran) {
+    ukuran = ukuran || 200;
+    const urut = [], peta = {};
+    items.forEach(r => {
+        if (!r.no_nota) { urut.push([r]); return; }
+        const k = kunciNota(r);
+        if (!peta[k]) { peta[k] = []; urut.push(peta[k]); }
+        peta[k].push(r);
+    });
+    const hasil = []; let sedang = [];
+    urut.forEach(grup => {
+        if (sedang.length && sedang.length + grup.length > ukuran) { hasil.push(sedang); sedang = []; }
+        sedang = sedang.concat(grup);
+    });
+    if (sedang.length) hasil.push(sedang);
+    return hasil;
 }
 
 /** Catat "sidik jari" import ini SEKALI setelah semua chunk selesai diproses. */
