@@ -1225,35 +1225,65 @@ class DashboardController extends Controller
         $sampai = $request->get('sampai');
         $LIMIT  = 3000;
 
-        // Pembelian yang tidak punya baris di Kartu HPP (penyebab "Selisih Pembelian vs Kartu HPP")
+        // "Selisih Pembelian vs Kartu HPP" = Σ nilai Pembelian di Kartu HPP − Σ DPP faktur (menu Pembelian).
+        // Daftar ini menampilkan SETIAP faktur yang nilainya berbeda, bukan hanya yang tidak punya baris Kartu:
+        //   1) faktur tanpa baris Kartu (barang belum di Master / harga 0 / tanggal-cabang Kartu beda)
+        //   2) faktur yang nilainya di Kartu LEBIH KECIL karena sebagian unitnya menutup barang yang sudah
+        //      terjual lebih dulu (unit itu sudah dibebankan ke HPP penjualan, bukan jadi persediaan)
+        //   3) baris Kartu 'Pembelian' yatim (faktur sumbernya sudah dihapus / di luar periode)
         if ($kode === 'sel_pembelian') {
             $div = 1 + $this->getTarif();
-            $q = DB::table('trx_beli')->leftJoin('barang', 'trx_beli.kode_barang', '=', 'barang.kode')
-                ->whereNotExists(function ($sub) {
-                    $sub->select(DB::raw(1))->from('hpp_kartu')
-                        ->whereColumn('hpp_kartu.ref_id', 'trx_beli.id')
-                        ->where('hpp_kartu.ref_tabel', 'trx_beli')
-                        ->where('hpp_kartu.qty_masuk', '>', 0);
-                });
-            if ($cabang) $q->where('trx_beli.cabang', $cabang);
-            if ($dari)   $q->where('trx_beli.tgl', '>=', $dari);
-            if ($sampai) $q->where('trx_beli.tgl', '<=', $sampai);
             $tot  = "(trx_beli.qty * trx_beli.harga - COALESCE(trx_beli.diskon, 0))";
             $kena = "COALESCE(NULLIF(trx_beli.ppn, ''), barang.ppn) = 'Kena PPN'";
-            $rows = $q->selectRaw("trx_beli.tgl, trx_beli.cabang, trx_beli.no_nota, trx_beli.id, trx_beli.kode_barang, barang.nama AS nama_barang,
-                    trx_beli.qty, ROUND(CASE WHEN $kena THEN $tot / ? ELSE $tot END) AS nilai,
-                    CASE WHEN barang.kode IS NULL THEN 'Barang belum ada di Master Barang' ELSE 'Tidak tercatat di Kartu HPP (mis. harga 0)' END AS ket", [$div])
-                ->orderBy('trx_beli.tgl')->orderBy('trx_beli.id')->limit($LIMIT + 1)->get();
-            $terpotong = $rows->count() > $LIMIT;
-            $rows = $rows->take($LIMIT)->map(fn($r) => [
-                'tgl' => $r->tgl, 'cabang' => $r->cabang, 'ref' => $r->no_nota ?: ('PB-' . $r->id),
-                'kode_barang' => $r->kode_barang, 'nama' => $r->nama_barang ?: '(belum di Master)',
-                'qty' => (float) $r->qty, 'nilai' => (float) $r->nilai, 'ket' => $r->ket,
-            ])->values();
+            $dpp  = "ROUND(CASE WHEN $kena THEN $tot / ? ELSE $tot END)";
+
+            $bind = [];
+            $pkOn = $this->fPeriode('hk.tgl', 'hk.cabang', $cabang, $dari, $sampai, $bind);
+            $w = ''; $bw = [];
+            if ($cabang) { $w .= ' AND trx_beli.cabang = ?'; $bw[] = $cabang; }
+            if ($dari)   { $w .= ' AND trx_beli.tgl >= ?';   $bw[] = $dari; }
+            if ($sampai) { $w .= ' AND trx_beli.tgl <= ?';   $bw[] = $sampai; }
+            $rs1 = DB::select("SELECT trx_beli.tgl, trx_beli.cabang, trx_beli.no_nota, trx_beli.id, trx_beli.kode_barang, barang.nama AS nama_barang,
+                    barang.kode AS bkode, trx_beli.qty, trx_beli.harga, $dpp AS dpp, COALESCE(hk.nilai_masuk, 0) AS kartu, hk.id AS hid, hk.keterangan AS kket
+                FROM trx_beli LEFT JOIN barang ON trx_beli.kode_barang = barang.kode
+                LEFT JOIN hpp_kartu hk ON hk.ref_tabel = 'trx_beli' AND hk.ref_id = trx_beli.id AND hk.qty_masuk > 0 AND $pkOn
+                WHERE 1=1 $w AND ABS(COALESCE(hk.nilai_masuk, 0) - $dpp) >= 1
+                ORDER BY trx_beli.tgl, trx_beli.id LIMIT " . ($LIMIT + 1),
+                array_merge([$div], $bind, $bw, [$div]));
+
+            $out = [];
+            foreach ($rs1 as $r) {
+                $selisih = (float) $r->kartu - (float) $r->dpp;
+                if ($r->bkode === null)       $why = 'Barang belum ada di Master Barang → tidak membentuk persediaan';
+                elseif ($r->hid === null)     $why = ((float) $r->harga <= 0 ? 'Harga beli 0' : 'Tidak tercatat di Kartu HPP pada periode/cabang ini') . ' → tidak membentuk persediaan';
+                elseif (stripos((string) $r->kket, 'menutup') !== false) $why = 'Sebagian unit menutup barang yang sudah terjual lebih dulu — ' . trim((string) $r->kket);
+                else                          $why = 'Nilai di Kartu HPP berbeda dari DPP faktur (Kartu: Rp ' . number_format((float) $r->kartu, 0, ',', '.') . ', Faktur: Rp ' . number_format((float) $r->dpp, 0, ',', '.') . ')';
+                $out[] = ['tgl' => $r->tgl, 'cabang' => $r->cabang, 'ref' => $r->no_nota ?: ('PB-' . $r->id),
+                    'kode_barang' => $r->kode_barang, 'nama' => $r->nama_barang ?: '(belum di Master)',
+                    'qty' => (float) $r->qty, 'nilai' => $selisih, 'ket' => $why, 'link' => false];
+            }
+
+            // 3) baris Kartu 'Pembelian' yatim
+            $b3 = []; $pk3 = $this->fPeriode('hk.tgl', 'hk.cabang', $cabang, $dari, $sampai, $b3);
+            $pt3 = $this->fPeriode('t.tgl', 't.cabang', $cabang, $dari, $sampai, $b3);
+            $rs3 = DB::select("SELECT hk.tgl, hk.cabang, hk.ref, hk.kode_barang, bn.nama AS nama_barang, hk.qty_masuk AS qty, hk.nilai_masuk AS nilai, t.id AS tid
+                FROM hpp_kartu hk LEFT JOIN trx_beli t ON t.id = hk.ref_id LEFT JOIN barang bn ON bn.kode = hk.kode_barang
+                WHERE hk.ref_tabel = 'trx_beli' AND hk.qty_masuk > 0 AND hk.nilai_masuk > 0 AND $pk3
+                  AND NOT (t.id IS NOT NULL AND $pt3) ORDER BY hk.tgl, hk.id LIMIT " . ($LIMIT + 1), $b3);
+            foreach ($rs3 as $r) {
+                $out[] = ['tgl' => $r->tgl, 'cabang' => $r->cabang, 'ref' => $r->ref, 'kode_barang' => $r->kode_barang,
+                    'nama' => $r->nama_barang ?: $r->kode_barang, 'qty' => (float) $r->qty, 'nilai' => (float) $r->nilai,
+                    'ket' => $r->tid === null ? 'Ada di Kartu HPP tapi faktur pembeliannya sudah tidak ada — jalankan hpp:rebuild'
+                                              : 'Tanggal/cabang faktur berbeda dengan Kartu HPP', 'link' => false];
+            }
+            usort($out, fn($a, $b) => strcmp($a['tgl'], $b['tgl']));
+            $terpotong = count($out) > $LIMIT;
+            $rows = collect(array_slice($out, 0, $LIMIT))->values();
             return response()->json([
-                'judul' => 'Pembelian yang tidak tercatat di Kartu HPP', 'data' => $rows,
+                'judul' => 'Selisih Pembelian vs Kartu HPP', 'data' => $rows,
                 'total' => round($rows->sum('nilai')), 'terpotong' => $terpotong,
-                'catatan' => 'Nilai = DPP (setelah diskon, tanpa PPN Masukan). Barang ini ikut dihitung di total menu Pembelian, tetapi tidak membentuk persediaan di Kartu HPP.',
+                'catatan' => 'Nilai = (nilai Pembelian di Kartu HPP) − (DPP faktur, setelah diskon & tanpa PPN Masukan). Bertanda (−): faktur tercatat lebih kecil di Kartu HPP — '
+                    . 'terutama karena unitnya menutup barang yang sudah terjual lebih dulu (sudah jadi HPP penjualan, bukan persediaan), atau barangnya belum di Master Barang / harga 0.',
             ]);
         }
 

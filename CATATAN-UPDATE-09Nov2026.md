@@ -24,3 +24,9 @@ daftar kode (baris, qty, nilai, rentang tanggal) → klik kode → semua nota pe
 ## File berubah
 app/Http/Controllers/Api/DashboardController.php, routes/api.php (+ /laporan/penjualan-tanpa-master),
 public/js/modules/laporan.js, public/js/modules/deeplink.js
+
+## Revisi: klik "Selisih Pembelian vs Kartu HPP" tadinya kosong
+Daftar lama hanya mencari faktur yang TIDAK punya baris Kartu HPP, padahal selisihnya terutama berasal dari faktur yang
+nilainya di Kartu lebih kecil (sebagian unit menutup barang yang sudah terjual lebih dulu). Sekarang daftar menampilkan
+tiap faktur yang nilai Kartu-nya beda dari DPP faktur, lengkap dengan alasannya, plus baris Kartu 'Pembelian' yatim.
+Total daftar = angka di baris Laba Rugi.
