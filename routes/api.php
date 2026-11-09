@@ -43,6 +43,7 @@ Route::prefix('laporan')->group(function () {
     Route::get('/rekap-ppn-detail', [DashboardController::class, 'rekapPpnDetail']);
     Route::get('/pembelian-detail', [DashboardController::class, 'pembelianDetail']);
     Route::get('/hpp-kartu-detail', [DashboardController::class, 'hppKartuDetail']);
+    Route::get('/penjualan-tanpa-master', [DashboardController::class, 'penjualanTanpaMaster']);
 });
 
 // ── JURNAL MANUAL & MEMORIAL ────────────────────────────────────────────────

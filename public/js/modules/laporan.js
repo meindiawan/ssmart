@@ -356,7 +356,8 @@ window.lapLihatHppKartu = async (kode, label, dari, sampai, periodeLabel) => {
     try {
         const res  = await apiGet('/laporan/hpp-kartu-detail' + buildQuery({ kode, cabang: cab, dari, sampai }));
         const rows = res.data || [];
-        const linkable = (ref) => /^RT-\d+$/.test(ref || '');
+        const linkable = (ref, x) => (x && x.link === true && !!ref) || /^RT-\d+$/.test(ref || '');
+        const Rn = (n) => Number(n) < 0 ? '(' + R(Math.abs(n)) + ')' : R(n);
         document.querySelector('#mbox .mbd').innerHTML = `
         <div style="font-size:12px;color:var(--ink3);margin-bottom:8px;">${cab || 'Semua cabang'} · ${esc(periodeLabel || '')} · ${rows.length}${res.terpotong ? '+' : ''} baris</div>
         <div class="note note-b" style="margin-bottom:12px;"><span class="note-ico">ℹ️</span><span>${esc(res.catatan || '')}</span></div>
@@ -365,16 +366,95 @@ window.lapLihatHppKartu = async (kode, label, dari, sampai, periodeLabel) => {
         <table style="width:100%;">
             <thead><tr><th style="text-align:left;">Tanggal</th><th style="text-align:left;">Referensi</th>
                 <th style="text-align:left;">Barang</th><th class="r">Qty</th><th class="r">Nilai</th><th style="text-align:left;">Keterangan</th></tr></thead>
-            <tbody>${rows.map(x => `<tr ${linkable(x.ref) ? `class="row-click" onclick="bukaBentukanRef('${esc(x.ref)}')" title="Klik untuk lihat bentukan jurnal"` : ''}>
+            <tbody>${rows.map(x => `<tr ${linkable(x.ref, x) ? `class="row-click" onclick="bukaBentukanRef('${esc(x.ref)}')" title="Klik untuk lihat bentukan jurnal"` : ''}>
                 <td style="font-size:12px;padding:4px 6px;white-space:nowrap;">${fmtTgl(x.tgl)}</td>
                 <td style="font-size:11px;padding:4px 6px;white-space:nowrap;"><span class="badge badge-noppn">${esc(x.ref || '–')}</span></td>
                 <td style="font-size:12px;padding:4px 6px;">${esc(x.nama)}<br><span style="font-family:var(--F-m);font-size:10px;color:var(--ink3);">${esc(x.kode_barang)} · ${esc(x.cabang)}</span></td>
                 <td class="r" style="padding:4px 6px;">${Number(x.qty).toLocaleString('id-ID')}</td>
-                <td class="r" style="padding:4px 6px;font-weight:600;">${R(x.nilai)}</td>
+                <td class="r" style="padding:4px 6px;font-weight:600;">${Rn(x.nilai)}</td>
                 <td style="font-size:11px;color:var(--ink2);padding:4px 6px;">${esc(x.ket || '')}</td></tr>`).join('')}</tbody>
-            <tfoot><tr style="font-weight:700;border-top:1px solid var(--brd);"><td colspan="4" style="padding:6px;">Total</td><td class="r" style="padding:6px;">${R(res.total)}</td><td></td></tr></tfoot>
+            <tfoot><tr style="font-weight:700;border-top:1px solid var(--brd);"><td colspan="4" style="padding:6px;">Total</td><td class="r" style="padding:6px;">${Rn(res.total)}</td><td></td></tr></tfoot>
         </table>`
         : '<div class="empty"><div class="ico">📭</div><strong>Tidak ada transaksi.</strong></div>'}`;
+    } catch (err) {
+        document.querySelector('#mbox .mbd').innerHTML = `<div class="note note-y"><span class="note-ico">⚠️</span><span>${esc(err.message)}</span></div>`;
+    }
+};
+
+/** Penjualan yang kode barangnya TIDAK ADA di Master Barang — daftar kode (klik kode → nota-nya). */
+window.lapLihatTanpaMaster = async (dari, sampai, periodeLabel) => {
+    const cab = getCabang();
+    openM(`<div class="mhd"><h3>🔴 Penjualan Tanpa Kode di Master Barang</h3><button class="mclose" onclick="closeM()">×</button></div>
+        <div class="mbd">${loadingHTML}</div>`);
+    lapSetModalFooter('<button class="btn btn-g" onclick="closeM()">Tutup</button>');
+    try {
+        const res  = await apiGet('/laporan/penjualan-tanpa-master' + buildQuery({ cabang: cab, dari, sampai }));
+        const rows = res.data || [];
+        window._lapTanpaMaster = rows;
+        document.querySelector('#mbox .mbd').innerHTML = `
+        <div style="font-size:12px;color:var(--ink3);margin-bottom:8px;">${cab || 'Semua cabang'} · ${esc(periodeLabel || '')} · ${res.jml_kode} kode · ${res.jml_baris} baris penjualan</div>
+        <div class="note note-y" style="margin-bottom:12px;"><span class="note-ico">ℹ️</span><span>
+            Baris penjualan di bawah ini kodenya belum terdaftar di Master Barang, jadi <strong>tidak ikut</strong> Pendapatan, HPP, maupun Jurnal
+            (itulah selisih antara total Riwayat Penjualan dan Pendapatan Laba Rugi). Total <strong>${R(res.total)}</strong> (qty × harga, belum dipotong diskon).
+            Klik sebuah kode untuk melihat nota-nya. Perbaiki lewat <strong>Transaksi ▸ Sinkronisasi Data ▸ 🧩 Barang Tidak Terdeteksi</strong>
+            (Cocokkan Otomatis, atau daftarkan ke Master Barang).</span></div>
+        <input class="finput" placeholder="🔍 Cari kode…" style="width:100%;margin-bottom:8px;" oninput="lapFilterTanpaMaster(this.value, '${esc(dari || '')}','${esc(sampai || '')}','${esc(periodeLabel || '').replace(/'/g, "\\'")}')">
+        <div style="max-height:52vh;overflow:auto;">
+        <table style="width:100%;">
+            <thead><tr><th>#</th><th style="text-align:left;">Kode</th><th class="r">Baris</th><th class="r">Qty</th><th class="r">Nilai</th><th style="text-align:left;">Periode transaksi</th></tr></thead>
+            <tbody id="tmsBody">${lapBarisTanpaMaster(rows, dari, sampai, periodeLabel)}</tbody>
+            <tfoot><tr style="font-weight:700;border-top:1px solid var(--brd);"><td colspan="4" style="padding:6px;">Total</td><td class="r" style="padding:6px;">${R(res.total)}</td><td></td></tr></tfoot>
+        </table></div>`;
+    } catch (err) {
+        document.querySelector('#mbox .mbd').innerHTML = `<div class="note note-y"><span class="note-ico">⚠️</span><span>${esc(err.message)}</span></div>`;
+    }
+};
+function lapBarisTanpaMaster(list, dari, sampai, periodeLabel) {
+    const a = `'${esc(dari || '')}','${esc(sampai || '')}','${esc(periodeLabel || '').replace(/'/g, "\\'")}'`;
+    return list.length ? list.map((x, i) => `<tr class="row-click" title="Klik untuk lihat nota penjualan kode ini"
+        onclick="lapLihatTanpaMasterKode('${esc(x.kode_barang).replace(/'/g, "\\'")}',${a})">
+        <td style="font-size:12px;">${i + 1}</td>
+        <td style="font-family:var(--F-m);font-size:12px;">${esc(x.kode_barang)}${x.kode_asli && x.kode_asli !== x.kode_barang ? `<br><span style="font-size:10px;color:var(--ink3);">asli: ${esc(x.kode_asli)}</span>` : ''}</td>
+        <td class="r">${x.jumlah.toLocaleString('id-ID')}</td>
+        <td class="r">${Number(x.qty).toLocaleString('id-ID')}</td>
+        <td class="r" style="font-weight:600;">${R(x.nilai)}</td>
+        <td style="font-size:11px;color:var(--ink2);">${fmtTgl(x.tgl_pertama)}${x.tgl_pertama !== x.tgl_terakhir ? ' – ' + fmtTgl(x.tgl_terakhir) : ''}${x.jml_cabang > 1 ? ` · ${x.jml_cabang} cabang` : ''}</td></tr>`).join('')
+        : '<tr><td colspan="6" style="text-align:center;color:var(--ink3);">Tidak ada yang cocok.</td></tr>';
+}
+window.lapFilterTanpaMaster = (q, dari, sampai, periodeLabel) => {
+    const k = String(q || '').trim().toLowerCase();
+    const all = window._lapTanpaMaster || [];
+    const hasil = k ? all.filter(x => String(x.kode_barang).toLowerCase().includes(k) || String(x.kode_asli || '').toLowerCase().includes(k)) : all;
+    const el = document.getElementById('tmsBody');
+    if (el) el.innerHTML = lapBarisTanpaMaster(hasil, dari, sampai, periodeLabel);
+};
+/** Nota/baris penjualan dari 1 kode yang tidak ada di Master Barang. */
+window.lapLihatTanpaMasterKode = async (kode, dari, sampai, periodeLabel) => {
+    const cab = getCabang();
+    openM(`<div class="mhd"><h3>🔴 Penjualan kode ${esc(kode)}</h3><button class="mclose" onclick="closeM()">×</button></div>
+        <div class="mbd">${loadingHTML}</div>`);
+    lapSetModalFooter('<button class="btn btn-g" onclick="closeM()">Tutup</button>');
+    try {
+        const res  = await apiGet('/laporan/penjualan-tanpa-master' + buildQuery({ cabang: cab, dari, sampai, kode }));
+        const rows = res.data || [];
+        document.querySelector('#mbox .mbd').innerHTML = `
+        <div style="font-size:12px;color:var(--ink3);margin-bottom:8px;">${cab || 'Semua cabang'} · ${esc(periodeLabel || '')} · ${rows.length}${res.terpotong ? '+' : ''} baris</div>
+        ${res.terpotong ? '<div class="note note-y" style="margin-bottom:12px;"><span class="note-ico">⚠️</span><span>Daftar dipotong 3.000 baris pertama. Persempit periode untuk melihat semuanya.</span></div>' : ''}
+        <div style="max-height:55vh;overflow:auto;">
+        <table style="width:100%;">
+            <thead><tr><th style="text-align:left;">Tanggal</th><th style="text-align:left;">No. Nota</th><th style="text-align:left;">Cabang</th>
+                <th class="r">Qty</th><th class="r">Harga</th><th class="r">Nilai</th><th style="text-align:left;">Bayar</th></tr></thead>
+            <tbody>${rows.map(x => `<tr>
+                <td style="font-size:12px;white-space:nowrap;">${fmtTgl(x.tgl)}</td>
+                <td style="font-size:11px;"><span class="badge badge-noppn">${esc(x.ref || '–')}</span></td>
+                <td style="font-size:12px;">${esc(x.cabang)}</td>
+                <td class="r">${Number(x.qty).toLocaleString('id-ID')}</td>
+                <td class="r">${R(x.harga)}</td>
+                <td class="r" style="font-weight:600;">${R(x.nilai)}</td>
+                <td style="font-size:11px;">${esc(x.bayar || '')}</td></tr>`).join('')}</tbody>
+            <tfoot><tr style="font-weight:700;border-top:1px solid var(--brd);"><td colspan="5" style="padding:6px;">Total</td><td class="r" style="padding:6px;">${R(res.total)}</td><td></td></tr></tfoot>
+        </table></div>`;
+        lapSetModalFooter(`<button class="btn btn-g" onclick="lapLihatTanpaMaster('${esc(dari || '')}','${esc(sampai || '')}','${esc(periodeLabel || '').replace(/'/g, "\\'")}')">← Kembali ke Daftar Kode</button><button class="btn btn-p" onclick="closeM()">Tutup</button>`);
     } catch (err) {
         document.querySelector('#mbox .mbd').innerHTML = `<div class="note note-y"><span class="note-ico">⚠️</span><span>${esc(err.message)}</span></div>`;
     }
@@ -560,12 +640,13 @@ async function renderLabaRugi() {
         <div class="note note-y" style="margin-bottom:12px;border-color:var(--red);">
             <span class="note-ico">🔴</span>
             <span>
-                <strong>${r.barang_tidak_terdeteksi.jumlah_kode} kode barang</strong> (total omzet <strong>${R(r.barang_tidak_terdeteksi.omzet)}</strong>)
+                <a href="javascript:void(0)" style="font-weight:700;text-decoration:underline;cursor:pointer;" title="Klik untuk lihat daftar kodenya" onclick="lapLihatTanpaMaster(${dfArg})">${r.barang_tidak_terdeteksi.jumlah_kode} kode barang</a> (total omzet <strong>${R(r.barang_tidak_terdeteksi.omzet)}</strong>)
                 sudah tercatat di Riwayat Penjualan tapi <strong>belum terdaftar sama sekali</strong> di Master Barang —
                 baris ini <strong>tidak ikut dihitung</strong> di Pendapatan/Laba Rugi di bawah ini, makanya total di
                 Riwayat Penjualan bisa terlihat lebih besar daripada Pendapatan di sini.
                 Buka <strong>Transaksi ▸ Sinkronisasi Data ▸ 🧩 Barang Tidak Terdeteksi</strong>, klik <strong>🔗 Cocokkan Otomatis</strong> dulu
                 (kalau kodenya ternyata barcode barang yang sudah ada), lalu masukkan sisanya ke Master Barang.
+                <div style="margin-top:8px;"><button class="btn btn-g btn-sm" onclick="lapLihatTanpaMaster(${dfArg})">🔎 Lihat daftar kode &amp; nota-nya</button></div>
             </span>
         </div>` : ''}
         ${(r.barang_tanpa_modal && r.barang_tanpa_modal.length) ? `

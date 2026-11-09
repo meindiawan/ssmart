@@ -896,6 +896,53 @@ class DashboardController extends Controller
     // ringkasan (jumlah kode & total omzet) — detail lengkap + tombol
     // perbaikannya ada di menu Sinkronisasi Data ▸ Barang Tidak Terdeteksi
     // (TransaksiController::barangTidakTerdeteksi).
+    // Rincian "penjualan tanpa ada di Master Barang" (klik di peringatan Laba Rugi).
+    // Tanpa ?kode → daftar kode barang (dikelompokkan, urut omzet); dengan ?kode → nota/baris
+    // penjualan kode itu. Dasar nilai = SUM(qty×harga), SAMA dengan angka ringkasan di Laba Rugi.
+    public function penjualanTanpaMaster(Request $request)
+    {
+        $cabang = $request->get('cabang'); $dari = $request->get('dari'); $sampai = $request->get('sampai');
+        $kode = $request->get('kode');
+        $LIMIT = 3000;
+
+        $q = DB::table('trx_jual')->whereNotExists(function ($sub) {
+            $sub->select(DB::raw(1))->from('barang')->whereColumn('barang.kode', 'trx_jual.kode_barang');
+        });
+        if ($cabang) $q->where('cabang', $cabang);
+        if ($dari)   $q->where('tgl', '>=', $dari);
+        if ($sampai) $q->where('tgl', '<=', $sampai);
+
+        $tot = (clone $q)->selectRaw('COUNT(DISTINCT kode_barang) AS jml_kode, COUNT(*) AS jml_baris, COALESCE(SUM(qty*harga),0) AS omzet')->first();
+
+        if ($kode !== null && $kode !== '') {
+            $rows = (clone $q)->where('kode_barang', $kode)->orderBy('tgl')->orderBy('id')->limit($LIMIT + 1)
+                ->get(['id', 'tgl', 'cabang', 'no_nota', 'kode_barang', 'kode_asli', 'qty', 'harga', 'diskon', 'bayar']);
+            $terpotong = $rows->count() > $LIMIT;
+            $data = $rows->take($LIMIT)->map(fn($r) => [
+                'tgl' => $r->tgl, 'cabang' => $r->cabang, 'ref' => $r->no_nota ?: ('PJ-' . $r->id),
+                'qty' => (float) $r->qty, 'harga' => (float) $r->harga, 'diskon' => (float) ($r->diskon ?? 0),
+                'nilai' => round((float) $r->qty * (float) $r->harga), 'bayar' => $r->bayar,
+            ])->values();
+            return response()->json([
+                'mode' => 'transaksi', 'kode' => $kode, 'data' => $data, 'terpotong' => $terpotong,
+                'total' => round($data->sum('nilai')),
+            ]);
+        }
+
+        $rows = (clone $q)->selectRaw('kode_barang, MAX(kode_asli) AS kode_asli, COUNT(*) AS jumlah, SUM(qty) AS qty,
+                SUM(qty*harga) AS nilai, MIN(tgl) AS tgl_pertama, MAX(tgl) AS tgl_terakhir, COUNT(DISTINCT cabang) AS jml_cabang')
+            ->groupBy('kode_barang')->orderByDesc('nilai')->limit($LIMIT)->get()
+            ->map(fn($r) => [
+                'kode_barang' => $r->kode_barang, 'kode_asli' => $r->kode_asli, 'jumlah' => (int) $r->jumlah,
+                'qty' => (float) $r->qty, 'nilai' => round((float) $r->nilai), 'tgl_pertama' => $r->tgl_pertama,
+                'tgl_terakhir' => $r->tgl_terakhir, 'jml_cabang' => (int) $r->jml_cabang,
+            ])->values();
+        return response()->json([
+            'mode' => 'kode', 'data' => $rows, 'jml_kode' => (int) $tot->jml_kode, 'jml_baris' => (int) $tot->jml_baris,
+            'total' => round((float) $tot->omzet),
+        ]);
+    }
+
     public function barangTidakTerdeteksiRingkas(?string $cabang = null, ?string $dari = null, ?string $sampai = null): array
     {
         $q = DB::table('trx_jual')
@@ -1018,13 +1065,155 @@ class DashboardController extends Controller
             if (abs($nilai) < 1) continue;
             $rinci[] = ['kode' => $kode, 'label' => $d['label'], 'nilai' => $d['tanda'] === '-' ? -$nilai : $nilai, 'ket' => ''];
         }
-        // 3) Sisa (jurnal manual ke akun HPP, pembulatan, dll)
+        // 3) Sisa — DIURAIKAN per penyebab (bukan satu angka gelap) supaya tiap baris bisa diklik
+        //    & ditelusuri sampai transaksinya. Rumus (lihat komponenSisaHpp):
+        //    Sisa = Jurnal Manual ke 5101 + (HPP Penjualan Jurnal − Kartu) + (HPP Barang Keluar-Penjualan
+        //           Jurnal − Kartu) + (Retur Jual Kartu − Jurnal) + HPP unit melebihi stok.
+        foreach ($this->komponenSisaHpp($cabang, $dari, $sampai) as $k) {
+            if (abs($k['nilai']) < 1) continue;
+            $rinci[] = $k;
+        }
+        // Yang masih tersisa = pembulatan per baris jurnal (kecil). Kalau besar, jujur ditandai
+        // "belum terjelaskan" supaya tidak tersamar.
         $sisa = round($lainTotal) - array_sum(array_column($rinci, 'nilai'));
         if (abs($sisa) >= 1) {
-            $rinci[] = ['kode' => 'sisa', 'label' => 'Selisih lainnya', 'nilai' => $sisa,
-                'ket' => 'Jurnal manual ke akun HPP/Persediaan, pembulatan, atau transaksi yang nilai jurnalnya berbeda dari Kartu HPP.'];
+            $besar = abs($sisa) >= 1000;
+            $rinci[] = ['kode' => 'sisa', 'label' => $besar ? 'Selisih lainnya (belum terjelaskan)' : 'Pembulatan',
+                'nilai' => $sisa,
+                'ket' => $besar ? 'Selisih ini belum bisa dipetakan ke transaksi tertentu — kirim angka ini untuk dicek.'
+                                : 'Pembulatan Rupiah per baris jurnal vs Kartu HPP.'];
         }
         return $rinci;
+    }
+
+    // ─── Penguraian "Selisih lainnya" ──────────────────────────────────────
+    // Identitas: HPP(5101) − (Awal + Pembelian − Akhir) − Σ komponen di PENYESUAIAN_DEF
+    //   = Jurnal Manual→5101 + (J_jual − K_jual) + (J_bk − K_bk) + (K_retur − J_retur) + X
+    // J = nilai HPP yang diposting Jurnal (hpp_kartu.nilai per baris transaksi, dibulatkan),
+    // K = jumlah baris Kartu HPP pada periode/cabang yang sama,
+    // X = nilai HPP unit yang keluar MELEBIHI stok (dinilai rata-rata riwayat pembelian, tidak
+    //     mengurangi saldo persediaan karena saldonya memang sudah 0).
+    private const SISA_JK = [
+        'sisa_jual' => [
+            'label' => 'Selisih HPP Penjualan: Jurnal vs Kartu HPP',
+            'ket' => 'Baris Penjualan yang ada di Kartu HPP tapi tidak masuk Jurnal (atau sebaliknya): transaksi sudah dihapus, barang tidak ada di Master, atau tanggal/cabang beda.',
+            'trx' => 'trx_jual', 'extra' => '', 'kartuExtra' => '', 'ref' => 'trx_jual',
+            'qty' => 'qty_keluar', 'nilai' => 'nilai_keluar', 'inner' => true, 'sign' => 1,
+        ],
+        'sisa_bk' => [
+            'label' => 'Selisih HPP Barang Keluar (Penjualan): Jurnal vs Kartu HPP',
+            'ket' => 'Barang Keluar jenis Penjualan yang ada di Kartu HPP tapi tidak masuk Jurnal (atau sebaliknya).',
+            'trx' => 'barang_keluar', 'extra' => "AND t.jenis = 'Penjualan'", 'kartuExtra' => "AND hk.tipe = 'Barang Keluar (Penjualan)'",
+            'ref' => 'barang_keluar', 'qty' => 'qty_keluar', 'nilai' => 'nilai_keluar', 'inner' => true, 'sign' => 1,
+        ],
+        'sisa_retur' => [
+            'label' => 'Selisih Retur Jual: Kartu HPP vs Jurnal',
+            'ket' => 'Retur Jual yang nilainya ada di Kartu HPP tapi tidak menjadi pengurang HPP di Jurnal (atau sebaliknya).',
+            'trx' => 'trx_retur', 'extra' => "AND t.jenis = 'Jual'", 'kartuExtra' => "AND hk.tipe = 'Retur Jual'",
+            'ref' => 'trx_retur', 'qty' => 'qty_masuk', 'nilai' => 'nilai_masuk', 'inner' => false, 'sign' => -1,
+        ],
+    ];
+
+    /** Klausa WHERE periode+cabang (kolom diberikan), bind ditambahkan ke $bind. */
+    private function fPeriode(string $tgl, string $cab, ?string $cabang, ?string $dari, ?string $sampai, array &$bind): string
+    {
+        $s = '1=1';
+        if ($cabang) { $s .= " AND $cab = ?";  $bind[] = $cabang; }
+        if ($dari)   { $s .= " AND $tgl >= ?"; $bind[] = $dari; }
+        if ($sampai) { $s .= " AND $tgl <= ?"; $bind[] = $sampai; }
+        return $s;
+    }
+
+    /** Ekspresi SQL: nilai HPP unit yang keluar melebihi stok (hpp_kartu hk). */
+    private function sqlHppMelebihi(): string
+    {
+        return "(hk.nilai_keluar - CASE WHEN hk.saldo_qty_sebelum > 0.0001 AND hk.qty_keluar < hk.saldo_qty_sebelum - 0.0001
+                    THEN hk.qty_keluar * hk.saldo_nilai_sebelum / hk.saldo_qty_sebelum ELSE hk.saldo_nilai_sebelum END)";
+    }
+
+    /** Jurnal Manual/Memorial yang menyentuh akun 5101 (nilai bersih D−K per baris). */
+    private function barisManual5101(?string $cabang, ?string $dari, ?string $sampai): array
+    {
+        $tmp = [];
+        $this->tambahJurnalManual($tmp, $cabang, $dari, $sampai);
+        return array_values(array_filter($tmp, fn($l) => (string) $l['akun'] === '5101'));
+    }
+
+    /** Selisih Jurnal vs Kartu HPP untuk 1 jenis transaksi. $detail=false → angka (sudah bertanda
+     *  kontribusi ke "Selisih lainnya"); $detail=true → daftar baris penyebabnya. */
+    private function selisihJK(string $kode, ?string $cabang, ?string $dari, ?string $sampai, bool $detail)
+    {
+        $c = self::SISA_JK[$kode];
+        $trx = $c['trx']; $q = 'hk.' . $c['qty']; $n = 'hk.' . $c['nilai'];
+        $joinB = $c['inner'] ? 'JOIN' : 'LEFT JOIN';
+        $adaBarang = $c['inner'] ? 'AND b.kode IS NOT NULL' : '';
+
+        // (a) baris Kartu HPP yang TIDAK punya pasangan di Jurnal
+        $bK = []; $pk = $this->fPeriode('hk.tgl', 'hk.cabang', $cabang, $dari, $sampai, $bK);
+        $pt = $this->fPeriode('t.tgl', 't.cabang', $cabang, $dari, $sampai, $bK);
+        $sqlK = "FROM hpp_kartu hk
+                 LEFT JOIN $trx t ON t.id = hk.ref_id {$c['extra']}
+                 LEFT JOIN barang b ON b.kode = t.kode_barang
+                 LEFT JOIN barang bn ON bn.kode = hk.kode_barang
+                 WHERE hk.ref_tabel = '{$c['ref']}' AND $q > 0 AND $n > 0 {$c['kartuExtra']} AND $pk
+                   AND NOT (t.id IS NOT NULL $adaBarang AND $pt)";
+
+        // (b) baris Jurnal yang Kartu HPP-nya jatuh di luar periode/cabang yang sama
+        $bJ = []; $pt2 = $this->fPeriode('t.tgl', 't.cabang', $cabang, $dari, $sampai, $bJ);
+        $pk2 = $this->fPeriode('hk.tgl', 'hk.cabang', $cabang, $dari, $sampai, $bJ);
+        $sqlJ = "FROM $trx t $joinB barang b ON b.kode = t.kode_barang
+                 JOIN hpp_kartu hk ON hk.ref_tabel = '{$c['ref']}' AND hk.ref_id = t.id AND $q > 0
+                 WHERE $n > 0 {$c['extra']} AND $pt2 AND NOT ($pk2 {$c['kartuExtra']})";
+
+        if (!$detail) {
+            $onlyK = (float) (DB::selectOne("SELECT COALESCE(SUM($n),0) AS s $sqlK", $bK)->s ?? 0);
+            $onlyJ = (float) (DB::selectOne("SELECT COALESCE(SUM(ROUND($n)),0) AS s $sqlJ", $bJ)->s ?? 0);
+            return $c['sign'] * ($onlyJ - $onlyK);
+        }
+
+        $LIM = 3001;
+        $out = [];
+        $rowsK = DB::select("SELECT hk.tgl, hk.cabang, hk.ref, hk.kode_barang, bn.nama AS nama_barang, $q AS qty, $n AS nilai,
+                    t.id AS tid, t.tgl AS ttgl, t.cabang AS tcab, b.kode AS bkode $sqlK ORDER BY hk.tgl, hk.id LIMIT $LIM", $bK);
+        foreach ($rowsK as $r) {
+            if ($r->tid === null)
+                $why = 'Kartu HPP tanpa transaksi sumber (transaksi sudah dihapus/diubah) — jalankan hpp:rebuild';
+            elseif ($c['inner'] && $r->bkode === null)
+                $why = 'Kode barang tidak ada di Master Barang → transaksi tidak ikut Jurnal, tapi masih tercatat di Kartu HPP';
+            else
+                $why = 'Tanggal/cabang transaksi (' . $r->ttgl . ', ' . $r->tcab . ') berbeda dengan Kartu HPP (' . $r->tgl . ', ' . $r->cabang . ')';
+            $out[] = ['tgl' => $r->tgl, 'cabang' => $r->cabang, 'ref' => $r->ref, 'kode_barang' => $r->kode_barang,
+                'nama' => $r->nama_barang ?: $r->kode_barang, 'qty' => (float) $r->qty,
+                'nilai' => -$c['sign'] * (float) $r->nilai, 'ket' => 'Hanya di Kartu HPP — ' . $why, 'link' => false];
+        }
+        $rowsJ = DB::select("SELECT t.tgl, t.cabang, hk.ref, t.kode_barang, b.nama AS nama_barang, $q AS qty, $n AS nilai,
+                    hk.tgl AS ktgl, hk.cabang AS kcab $sqlJ ORDER BY t.tgl, t.id LIMIT $LIM", $bJ);
+        foreach ($rowsJ as $r) {
+            $out[] = ['tgl' => $r->tgl, 'cabang' => $r->cabang, 'ref' => $r->ref, 'kode_barang' => $r->kode_barang,
+                'nama' => $r->nama_barang ?: $r->kode_barang, 'qty' => (float) $r->qty,
+                'nilai' => $c['sign'] * round((float) $r->nilai),
+                'ket' => 'Hanya di Jurnal — Kartu HPP bertanggal/bercabang beda (' . $r->ktgl . ', ' . $r->kcab . ')', 'link' => true];
+        }
+        usort($out, fn($a, $b) => strcmp($a['tgl'], $b['tgl']));
+        return $out;
+    }
+
+    private function komponenSisaHpp(?string $cabang, ?string $dari, ?string $sampai): array
+    {
+        $out = [];
+        $m = 0.0;
+        foreach ($this->barisManual5101($cabang, $dari, $sampai) as $l) $m += (float) $l['D'] - (float) $l['K'];
+        $out[] = ['kode' => 'sisa_manual', 'label' => 'Jurnal Manual/Memorial ke akun HPP (5101)', 'nilai' => round($m),
+            'ket' => 'Jurnal yang diinput langsung ke akun 5101: ikut HPP di Laba Rugi tetapi tidak ada di Kartu HPP.'];
+        foreach (self::SISA_JK as $kode => $c) {
+            $out[] = ['kode' => $kode, 'label' => $c['label'], 'nilai' => round($this->selisihJK($kode, $cabang, $dari, $sampai, false)), 'ket' => $c['ket']];
+        }
+        $bind = []; $pk = $this->fPeriode('hk.tgl', 'hk.cabang', $cabang, $dari, $sampai, $bind);
+        $x = $this->sqlHppMelebihi();
+        $s = (float) (DB::selectOne("SELECT COALESCE(SUM($x),0) AS s FROM hpp_kartu hk WHERE hk.qty_keluar > 0 AND $x > 0.5 AND $pk", $bind)->s ?? 0);
+        $out[] = ['kode' => 'sisa_melebihi', 'label' => 'HPP unit terjual melebihi stok pembelian', 'nilai' => round($s),
+            'ket' => 'Unit yang keluar melebihi stok dinilai rata-rata riwayat pembelian: masuk HPP, tapi tidak mengurangi persediaan (stok sudah 0). Pembelian susulan yang menutupnya ada di baris "Selisih Pembelian vs Kartu HPP".'];
+        return $out;
     }
 
     // Rincian transaksi di balik 1 baris "Penyesuaian lain" (klik di Laba Rugi).
@@ -1065,6 +1254,50 @@ class DashboardController extends Controller
                 'judul' => 'Pembelian yang tidak tercatat di Kartu HPP', 'data' => $rows,
                 'total' => round($rows->sum('nilai')), 'terpotong' => $terpotong,
                 'catatan' => 'Nilai = DPP (setelah diskon, tanpa PPN Masukan). Barang ini ikut dihitung di total menu Pembelian, tetapi tidak membentuk persediaan di Kartu HPP.',
+            ]);
+        }
+
+        // ─── Rincian penyebab "Selisih lainnya" ────────────────────────────
+        if ($kode === 'sisa_manual') {
+            $rows = collect($this->barisManual5101($cabang, $dari, $sampai))->map(fn($l) => [
+                'tgl' => $l['tgl'], 'cabang' => $l['cab'], 'ref' => $l['ref'], 'kode_barang' => '',
+                'nama' => $l['ket'], 'qty' => 0, 'nilai' => (float) $l['D'] - (float) $l['K'],
+                'ket' => ((float) $l['D'] - (float) $l['K']) >= 0 ? 'Debit 5101 (menambah HPP)' : 'Kredit 5101 (mengurangi HPP)', 'link' => true,
+            ])->sortBy('tgl')->values();
+            return response()->json([
+                'judul' => 'Jurnal Manual/Memorial ke akun HPP (5101)', 'data' => $rows->take($LIMIT)->values(),
+                'total' => round($rows->take($LIMIT)->sum('nilai')), 'terpotong' => $rows->count() > $LIMIT,
+                'catatan' => 'Jurnal yang diinput langsung (menu Jurnal) ke akun 5101. Nilainya ikut HPP di Laba Rugi tetapi tidak berasal dari Kartu HPP, jadi muncul sebagai selisih. Klik baris untuk melihat bentukan jurnalnya.',
+            ]);
+        }
+        if ($kode === 'sisa_melebihi') {
+            $bind = []; $pk = $this->fPeriode('hk.tgl', 'hk.cabang', $cabang, $dari, $sampai, $bind);
+            $x = $this->sqlHppMelebihi();
+            $rs = DB::select("SELECT hk.tgl, hk.cabang, hk.ref, hk.tipe, hk.kode_barang, bn.nama AS nama_barang, hk.qty_keluar AS qty,
+                    hk.saldo_qty_sebelum AS sb, $x AS nilai, hk.hpp_satuan
+                FROM hpp_kartu hk LEFT JOIN barang bn ON bn.kode = hk.kode_barang
+                WHERE hk.qty_keluar > 0 AND $x > 0.5 AND $pk ORDER BY hk.tgl, hk.id LIMIT " . ($LIMIT + 1), $bind);
+            $terpotong = count($rs) > $LIMIT;
+            $rows = collect(array_slice($rs, 0, $LIMIT))->map(fn($r) => [
+                'tgl' => $r->tgl, 'cabang' => $r->cabang, 'ref' => $r->ref, 'kode_barang' => $r->kode_barang,
+                'nama' => $r->nama_barang ?: $r->kode_barang, 'qty' => (float) $r->qty, 'nilai' => round((float) $r->nilai),
+                'ket' => $r->tipe . ' — stok bernilai saat itu ' . round((float) $r->sb, 2) . ', sisanya dinilai Rp ' . number_format((float) $r->hpp_satuan, 0, ',', '.') . '/unit',
+                'link' => false,
+            ])->values();
+            return response()->json([
+                'judul' => 'HPP unit terjual melebihi stok pembelian', 'data' => $rows,
+                'total' => round($rows->sum('nilai')), 'terpotong' => $terpotong,
+                'catatan' => 'Nilai = HPP bagian qty yang melebihi stok bernilai (dinilai rata-rata riwayat pembelian). Sudah masuk HPP, tapi tidak mengurangi persediaan karena stok bernilainya memang sudah 0; pembelian susulan yang menutup unit ini mengurangi nilai masuk di baris "Selisih Pembelian vs Kartu HPP".',
+            ]);
+        }
+        if (isset(self::SISA_JK[$kode])) {
+            $rows = collect($this->selisihJK($kode, $cabang, $dari, $sampai, true));
+            $terpotong = $rows->count() > $LIMIT * 2;
+            $rows = $rows->take($LIMIT)->values();
+            return response()->json([
+                'judul' => self::SISA_JK[$kode]['label'], 'data' => $rows,
+                'total' => round($rows->sum('nilai')), 'terpotong' => $terpotong,
+                'catatan' => self::SISA_JK[$kode]['ket'] . ' Nilai bertanda (+) menambah, (−) mengurangi "Selisih lainnya". Selisih Rp 1–2 per baris dari pembulatan tidak ditampilkan.',
             ]);
         }
 
