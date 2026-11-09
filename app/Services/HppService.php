@@ -91,10 +91,52 @@ class HppService
      *  dan daftar "barang terjual HPP Rp 0" jadi terlalu kecil. */
     public const PAKAI_PEMBELIAN_TERAWAL = false;
 
+    /** true (DEFAULT, sejak revisi 6 Nov 2026) = HPP TIDAK PERNAH 0 untuk barang
+     *  yang SUDAH ADA riwayat pembeliannya. Kalau penjualan/barang keluar tidak
+     *  punya saldo bernilai (dijual sebelum pembelian pertama, stok pembelian
+     *  habis, cabang itu belum pernah beli, atau qty melebihi stok pembelian),
+     *  HPP-nya = RATA-RATA RIWAYAT PEMBELIAN barang itu (rata-rata tertimbang
+     *  qty, harga DPP, semua tanggal). Dipakai rata-rata cabang itu sendiri
+     *  kalau cabang itu pernah membeli, kalau tidak → rata-rata semua cabang.
+     *  Barang yang BENAR-BENAR belum pernah dibeli tetap HPP 0.
+     *  Saldo/persediaan di Kartu HPP tidak berubah: unit yang melebihi stok
+     *  hanya diberi NILAI HPP (beban), tetap dicatat sebagai "hutang barang"
+     *  yang ditutup pembelian berikutnya, jadi persediaan tidak dobel.
+     *  Ubah ke false untuk kembali ke aturan 5 Nov 2026 (ketat). */
+    public const PAKAI_RATA_RATA_RIWAYAT_PEMBELIAN = true;
+
+    /** Rata-rata tertimbang (qty) SELURUH riwayat pembelian barang ini, per
+     *  cabang + gabungan semua cabang (kunci '*'). Hanya Pembelian / Barang
+     *  Masuk berharga > 0 (harga sudah DPP, Saldo Awal sudah dibuang di
+     *  gatherEvents). Tidak peduli tanggal. */
+    private function hargaBeliRataRata($events): array
+    {
+        $acc = [];
+        foreach ($events as $e) {
+            if ($e['arah'] !== 'masuk' || !in_array($e['ref_tabel'], ['trx_beli', 'barang_masuk'], true)) continue;
+            $h = (float) ($e['harga'] ?? 0); $q = (float) $e['qty'];
+            if ($h <= 0 || $q <= 0) continue;
+            foreach ([$e['cabang'], '*'] as $k) {
+                if (!isset($acc[$k])) $acc[$k] = ['q' => 0.0, 'n' => 0.0];
+                $acc[$k]['q'] += $q; $acc[$k]['n'] += $q * $h;
+            }
+        }
+        return array_map(fn($a) => $a['q'] > 0 ? $a['n'] / $a['q'] : 0.0, $acc);
+    }
+
+    /** Rata-rata riwayat pembelian utk 1 cabang (fallback ke semua cabang).
+     *  null = barang belum pernah dibeli / fitur dimatikan. */
+    private function rataBeliCabang(array $map, string $cab): ?float
+    {
+        if (!self::PAKAI_RATA_RATA_RIWAYAT_PEMBELIAN) return null;
+        $v = $map[$cab] ?? ($map['*'] ?? null);
+        return ($v !== null && $v > 0) ? (float) $v : null;
+    }
+
     /** Harga masuk utk sebuah event masuk. Return null = tidak ada basis
      *  biaya (tidak ikut dicatat di Kartu HPP). $lastBeli diisi kalau event
      *  ini adalah Pembelian berharga > 0. */
-    private function hargaMasuk(array $e, array $mutasiHpp, float $hppSebelum, ?float &$lastBeli): ?float
+    private function hargaMasuk(array $e, array $mutasiHpp, float $hppSebelum, ?float &$lastBeli, ?float $rataBeli = null): ?float
     {
         $mutasi = $e['ref_tabel'] === 'mutasi_kirim_detail';
         $harga = $mutasi ? ($mutasiHpp[$e['ref_id']] ?? null) : ($e['harga'] ?? null);
@@ -115,11 +157,14 @@ class HppService
         }
         // Retur Jual / Opname(+) / Mutasi tanpa biaya / pembelian berharga 0:
         // netral di rata-rata berjalan; kalau belum ada basis biaya → null.
-        return $hppSebelum > 0 ? $hppSebelum : null;
+        if ($hppSebelum > 0) return $hppSebelum;
+        // Belum ada saldo bernilai, tapi barangnya punya riwayat pembelian →
+        // barang yang kembali (mis. Retur Jual) dinilai rata-rata riwayat pembelian.
+        return ($rataBeli !== null && $rataBeli > 0) ? $rataBeli : null;
     }
 
     /** HPP per satuan utk event keluar. 0 = belum ada pembelian. */
-    private function hargaKeluar(array $e, float $hppSebelum, ?float $lastHpp, ?float $lastBeli, ?float $beliAwal = null): float
+    private function hargaKeluar(array $e, float $hppSebelum, ?float $lastHpp, ?float $lastBeli, ?float $beliAwal = null, ?float $rataBeli = null): float
     {
         if (!self::HANYA_DARI_PEMBELIAN && isset($e['harga_override'])) return (float) $e['harga_override'];
         if ($hppSebelum > 0) return $hppSebelum;
@@ -128,6 +173,9 @@ class HppService
         // Belum ada pembelian SEBELUM penjualan ini, tapi barangnya pernah dibeli
         // di tanggal lain → pakai rata-rata pembelian terawal (bukan 0).
         if (self::PAKAI_PEMBELIAN_TERAWAL && $beliAwal !== null && $beliAwal > 0) return $beliAwal;
+        // Barang sudah ada riwayat pembeliannya (tanggal/cabang mana pun) → rata-rata
+        // riwayat pembelian itu, BUKAN 0. Hanya barang yang tidak pernah dibeli yang 0.
+        if (self::PAKAI_RATA_RATA_RIWAYAT_PEMBELIAN && $rataBeli !== null && $rataBeli > 0) return $rataBeli;
         return 0.0;
     }
 
@@ -175,6 +223,7 @@ class HppService
         }
 
         $beliAwal = $this->hargaBeliTerawal($events);
+        $rataMap = $this->hargaBeliRataRata($events);
         $saldo = [];       // ['cabang' => ['qty'=>float, 'nilai'=>float]]
         $mutasiHpp = [];   // [mutasi_kirim_detail_id => hpp per satuan saat dikirim]
         $lastHpp = [];     // ['cabang' => rata-rata positif terakhir]
@@ -204,7 +253,7 @@ class HppService
 
             if ($e['arah'] === 'masuk') {
                 $qty = (float) $e['qty'];
-                $harga = $this->hargaMasuk($e, $mutasiHpp, $hppSebelum, $lastBeli);
+                $harga = $this->hargaMasuk($e, $mutasiHpp, $hppSebelum, $lastBeli, $this->rataBeliCabang($rataMap, $cab));
                 // Opname(+) saat stok sistem minus: hanya sebanyak qty fisik yang
                 // benar-benar ada yang dinilai (qty minus sudah terjual lebih dulu)
                 if ($harga !== null && isset($e['qty_nilai'])) $qty = (float) $e['qty_nilai'];
@@ -247,14 +296,21 @@ class HppService
             } else {
                 $qty = (float) $e['qty'];
                 // HPP = rata-rata hasil PEMBELIAN. Belum ada pembelian → 0.
-                $hppPakai = $this->hargaKeluar($e, $hppSebelum, $lastHpp[$cab] ?? null, $lastBeli, $beliAwal[$cab] ?? ($beliAwal['*'] ?? null));
-                // Hanya qty yang tertutup saldo bernilai yang ber-HPP; sisanya HPP 0 + hutang barang.
+                $hppPakai = $this->hargaKeluar($e, $hppSebelum, $lastHpp[$cab] ?? null, $lastBeli, $beliAwal[$cab] ?? ($beliAwal['*'] ?? null), $this->rataBeliCabang($rataMap, $cab));
+                // Qty yang tertutup saldo bernilai ber-HPP rata-rata berjalan. Qty yang MELEBIHI
+                // saldo dicatat sebagai hutang barang (saldo tidak minus) — dan tetap dinilai
+                // memakai $hppPakai (rata-rata riwayat pembelian) selama ada riwayat pembelian;
+                // HPP 0 hanya kalau barang itu memang belum pernah dibeli.
                 $tersedia = $before['qty'] > 0.0001 ? $before['qty'] : 0.0;
                 $qtyBerHpp = self::KELUAR_HANYA_YANG_TERSEDIA ? min($qty, $tersedia) : $qty;
-                $nilaiKeluar = $qtyBerHpp * $hppPakai;
+                $qtyDinilai = (self::PAKAI_RATA_RATA_RIWAYAT_PEMBELIAN && $hppPakai > 0) ? $qty : $qtyBerHpp;
+                $nilaiKeluar = $qtyDinilai * $hppPakai;
                 if (self::KELUAR_HANYA_YANG_TERSEDIA && $qty - $qtyBerHpp > 0.0001) {
                     $hutang[$cab] = (float) ($hutang[$cab] ?? 0.0) + ($qty - $qtyBerHpp);
-                    $row['keterangan'] = trim(($row['keterangan'] ?? '') . ' [' . round($qty - $qtyBerHpp, 2) . ' unit melebihi stok pembelian → HPP 0]');
+                    $lebih = round($qty - $qtyBerHpp, 2);
+                    $row['keterangan'] = trim(($row['keterangan'] ?? '') . ($qtyDinilai > $qtyBerHpp + 0.0001
+                        ? ' [' . $lebih . ' unit melebihi stok pembelian → HPP memakai rata-rata riwayat pembelian Rp ' . number_format($hppPakai, 0, ',', '.') . '/unit]'
+                        : ' [' . $lebih . ' unit melebihi stok pembelian → HPP 0]'));
                 }
 
                 if ($before['qty'] > 0.0001 && $qty < $before['qty'] - 0.0001) {
@@ -299,6 +355,13 @@ class HppService
         if ($qtyGlobal > 0.0001) {
             DB::table('barang')->where('kode', $kodeBarang)->update([
                 'modal' => round($nilaiGlobal / $qtyGlobal, 2),
+                'updated_at' => now(),
+            ]);
+        } elseif (self::PAKAI_RATA_RATA_RIWAYAT_PEMBELIAN && ($rataMap['*'] ?? 0) > 0) {
+            // Stok habis/minus tapi barang ini punya riwayat pembelian → Harga Modal
+            // di Master Barang = rata-rata riwayat pembelian (bukan 0 / angka basi).
+            DB::table('barang')->where('kode', $kodeBarang)->update([
+                'modal' => round($rataMap['*'], 2),
                 'updated_at' => now(),
             ]);
         }
@@ -448,11 +511,13 @@ class HppService
         // Persediaan (1105) terkredit lebih besar dari yang pernah didebet.
         // Barang yang belum pernah dibeli → HPP 0 → tidak ada kekurangan.
         $beliAwal = $this->hargaBeliTerawal($events);
+        $rataMap = $this->hargaBeliRataRata($events);
         $saldo = [];
         $lastHpp = [];
         $lastBeli = null;
         $mutasiHpp = [];
         $kurang = [];    // ['cabang' => ['qty'=>float, 'nilai'=>float, 'tgl'=>string]]
+        $hutang = [];    // ['cabang' => [[qty, harga], ...]] unit keluar melebihi stok, menunggu ditutup pembelian
 
         foreach ($events as $e) {
             $cab = $e['cabang'];
@@ -460,22 +525,49 @@ class HppService
             if (!isset($kurang[$cab])) $kurang[$cab] = ['qty' => 0.0, 'nilai' => 0.0, 'tgl' => $e['tgl']];
             $before = $saldo[$cab];
             $hppSebelum = $before['qty'] > 0.0001 ? $before['nilai'] / $before['qty'] : 0.0;
+            $rataBeli = $this->rataBeliCabang($rataMap, $cab);
 
             if ($e['arah'] === 'masuk') {
                 $qty = (float) $e['qty'];
-                $harga = $this->hargaMasuk($e, $mutasiHpp, $hppSebelum, $lastBeli);
+                $harga = $this->hargaMasuk($e, $mutasiHpp, $hppSebelum, $lastBeli, $rataBeli);
                 if ($harga !== null) {
-                    $saldo[$cab] = ['qty' => $before['qty'] + $qty, 'nilai' => $before['nilai'] + $qty * $harga];
+                    // Sama dgn rebuildItem(): masuk MENUTUP hutang barang lebih dulu. Unit yang
+                    // sudah terjual lebih dulu dan kini tertutup pembelian tidak lagi
+                    // "kekurangan" (kalau tetap dihitung, Saldo Awal dobel dgn pembelian itu).
+                    $qtyNilai = $qty;
+                    if (self::KELUAR_HANYA_YANG_TERSEDIA && !empty($hutang[$cab])) {
+                        if ($e['ref_tabel'] === 'stok_opname_detail' && isset($e['qty_nilai'])) {
+                            $qtyNilai = (float) $e['qty_nilai'];
+                            $tutup = max(0.0, $qty - $qtyNilai);
+                        } else {
+                            $tutup = min($qty, array_sum(array_column($hutang[$cab], 0)));
+                            $qtyNilai = $qty - $tutup;
+                        }
+                        while ($tutup > 0.0001 && !empty($hutang[$cab])) {
+                            $t = min($tutup, $hutang[$cab][0][0]);
+                            if ($hutang[$cab][0][1] > 0) {
+                                $kurang[$cab]['qty'] -= $t;
+                                $kurang[$cab]['nilai'] -= $t * $hutang[$cab][0][1];
+                            }
+                            $hutang[$cab][0][0] -= $t;
+                            $tutup -= $t;
+                            if ($hutang[$cab][0][0] <= 0.0001) array_shift($hutang[$cab]);
+                        }
+                    } elseif (isset($e['qty_nilai'])) {
+                        $qtyNilai = (float) $e['qty_nilai'];
+                    }
+                    $saldo[$cab] = ['qty' => $before['qty'] + $qtyNilai, 'nilai' => $before['nilai'] + $qtyNilai * $harga];
                 }
             } else {
                 $qty = (float) $e['qty'];
-                $hppPakai = $this->hargaKeluar($e, $hppSebelum, $lastHpp[$cab] ?? null, $lastBeli, $beliAwal[$cab] ?? ($beliAwal['*'] ?? null));
+                $hppPakai = $this->hargaKeluar($e, $hppSebelum, $lastHpp[$cab] ?? null, $lastBeli, $beliAwal[$cab] ?? ($beliAwal['*'] ?? null), $rataBeli);
                 $tersedia = $before['qty'] > 0.0001 ? $before['qty'] : 0.0;
                 if ($qty < $tersedia - 0.0001) {
                     $saldo[$cab] = ['qty' => $before['qty'] - $qty, 'nilai' => $before['nilai'] - $qty * $hppSebelum];
                 } else {
+                    $lebih = $qty - $tersedia;
+                    if ($lebih > 0.0001) $hutang[$cab][] = [$lebih, $hppPakai];
                     if ($hppPakai > 0) {
-                        $lebih = $qty - $tersedia;
                         $kurang[$cab]['qty'] += $lebih;
                         $kurang[$cab]['nilai'] += $lebih * $hppPakai;
                     }
