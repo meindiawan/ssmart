@@ -93,6 +93,33 @@ class StokController extends Controller
         });
     }
 
+    // Rata-rata tertimbang (qty) seluruh riwayat PEMBELIAN per (barang, cabang) = rb.rata,
+    // dan gabungan semua cabang per barang = rg.rata. Diambil dari Kartu HPP (harga_masuk
+    // sudah DPP, hanya Pembelian / Barang Masuk berharga > 0) — definisi yang sama dengan
+    // HppService::hargaBeliRataRata(). Dipakai utk menilai stok MINUS.
+    private function joinRataBeli($q)
+    {
+        $filter = "ref_tabel IN ('trx_beli','barang_masuk') AND harga_masuk > 0 AND qty_masuk > 0";
+        $rb = "(SELECT kode_barang, cabang, SUM(qty_masuk * harga_masuk) / SUM(qty_masuk) AS rata
+                FROM hpp_kartu WHERE $filter GROUP BY kode_barang, cabang) rb";
+        $rg = "(SELECT kode_barang, SUM(qty_masuk * harga_masuk) / SUM(qty_masuk) AS rata
+                FROM hpp_kartu WHERE $filter GROUP BY kode_barang) rg";
+        return $q->leftJoin(DB::raw($rb), function ($j) {
+                $j->on('rb.kode_barang', '=', 'stok.kode_barang')->on('rb.cabang', '=', 'stok.cabang');
+            })
+            ->leftJoin(DB::raw($rg), 'rg.kode_barang', '=', 'stok.kode_barang');
+    }
+
+    // Harga satuan utk menilai stok minus: rata-rata pembelian cabang itu, kalau cabang itu
+    // belum pernah membeli → rata-rata semua cabang, kalau barang belum pernah dibeli → 0.
+    private const SQL_HARGA_MINUS = 'COALESCE(rb.rata, rg.rata, 0)';
+
+    // Nilai stok per baris (barang, cabang):
+    //   qty < 0  → qty × rata-rata pembelian  (NEGATIF; 0 kalau belum pernah dibeli)
+    //   qty >= 0 → saldo nilai Kartu HPP (seperti sebelumnya)
+    private const SQL_NILAI_STOK = 'CASE WHEN stok.qty < 0 THEN ROUND(stok.qty * COALESCE(rb.rata, rg.rata, 0), 2)
+                                         ELSE COALESCE(kv.saldo_nilai, 0) END';
+
     // ─── GET STOK ────────────────────────────────────────────────
     // Kartu Stok Semua Barang: bisa diurutkan (default nama A-Z) —
     // 'sort' menerima: nama (default), qty_asc (qty paling sedikit dulu,
@@ -105,9 +132,11 @@ class StokController extends Controller
             ->select('stok.*', 'barang.nama', 'barang.satuan1', 'barang.satuan2',
                      'barang.harga_jual', 'barang.modal', 'barang.stok_min', 'barang.stok_max',
                      'barang.kategori', 'barang.ppn',
-                     DB::raw('COALESCE(kv.saldo_nilai, 0) AS nilai_kartu'),
+                     DB::raw(self::SQL_NILAI_STOK . ' AS nilai_kartu'),
+                     DB::raw(self::SQL_HARGA_MINUS . ' AS harga_rata_beli'),
                      DB::raw('COALESCE(kv.saldo_qty, 0) AS qty_kartu'));
         $this->joinNilaiKartu($q);
+        $this->joinRataBeli($q);
 
         if ($cab = $request->get('cabang')) $q->where('stok.cabang', $cab);
         if ($s   = $request->get('search')) {
@@ -121,8 +150,8 @@ class StokController extends Controller
         switch ($request->get('sort')) {
             case 'qty_asc':   $q->orderBy('stok.qty', 'asc');  break;
             case 'qty_desc':  $q->orderBy('stok.qty', 'desc'); break;
-            case 'nilai_desc':$q->orderByRaw('COALESCE(kv.saldo_nilai, 0) desc'); break;
-            case 'nilai_asc': $q->orderByRaw('COALESCE(kv.saldo_nilai, 0) asc');  break;
+            case 'nilai_desc':$q->orderByRaw(self::SQL_NILAI_STOK . ' desc'); break;
+            case 'nilai_asc': $q->orderByRaw(self::SQL_NILAI_STOK . ' asc');  break;
             default:          $q->orderBy('barang.nama');
         }
 
@@ -132,7 +161,8 @@ class StokController extends Controller
         // Tambah flag stok rendah
         $list = $list->map(function($item) {
             $item->stok_rendah = $item->stok_min > 0 && $item->qty <= $item->stok_min;
-            $item->nilai_stok  = (float) $item->nilai_kartu; // Kartu HPP (hanya dari Pembelian); belum ada pembelian = 0
+            $item->nilai_stok  = (float) $item->nilai_kartu; // qty>=0: Kartu HPP; qty<0: qty × rata-rata pembelian (negatif); belum pernah dibeli = 0
+            $item->nilai_minus = (float) $item->qty < 0;
             $item->selisih_kartu = abs((float) $item->qty - (float) $item->qty_kartu) > 0.01 && ((float) $item->qty_kartu > 0.01 || (float) $item->qty > 0.01);
             return $item;
         });
@@ -149,9 +179,10 @@ class StokController extends Controller
             ->select('stok.kode_barang', 'barang.nama', 'barang.satuan1', 'barang.modal',
                      'barang.stok_min', 'barang.kategori',
                      DB::raw('SUM(stok.qty) as qty_total'),
-                     DB::raw('SUM(COALESCE(kv.saldo_nilai, 0)) as nilai_total'))
+                     DB::raw('SUM(' . self::SQL_NILAI_STOK . ') as nilai_total'))
             ->groupBy('stok.kode_barang','barang.nama','barang.satuan1','barang.modal','barang.stok_min','barang.kategori');
         $this->joinNilaiKartu($q);
+        $this->joinRataBeli($q);
 
         if ($s = $request->get('search')) {
             $q->where(fn($q) => $q->where('barang.nama','like',"%$s%")
@@ -571,6 +602,13 @@ class StokController extends Controller
                                     ORDER BY h2.tgl DESC, h2.urutan DESC, h2.id DESC LIMIT 1)"
                       . ($cab ? " AND hk.cabang = ?" : "");
         $nilaiStok    = (float) (DB::selectOne($sqlNilai, $cab ? [$cab] : [])->n ?? 0);
+        // Stok MINUS dinilai terpisah (qty × rata-rata pembelian, negatif) — informasi saja,
+        // TIDAK dimasukkan ke total Nilai Stok di atas supaya tetap sama dgn Persediaan Akhir
+        // Laba Rugi (Kartu HPP tidak pernah minus).
+        $qm = DB::table('stok')->where('stok.qty', '<', 0);
+        if ($cab) $qm->where('stok.cabang', $cab);
+        $this->joinRataBeli($qm);
+        $minus = $qm->selectRaw('COUNT(*) AS n, COALESCE(SUM(ROUND(stok.qty * ' . self::SQL_HARGA_MINUS . ', 2)), 0) AS nilai')->first();
         $itemSelisih  = $q->clone()->whereRaw('ABS(stok.qty - COALESCE(kv.saldo_qty, 0)) > 0.01')
                           ->whereRaw('(stok.qty > 0.01 OR COALESCE(kv.saldo_qty, 0) > 0.01)')->count();
         $stokRendah   = $q->clone()->whereRaw('stok.qty <= barang.stok_min AND barang.stok_min > 0')->count();
@@ -579,6 +617,8 @@ class StokController extends Controller
         return response()->json([
             'total_item'  => $totalItem,
             'nilai_stok'  => $nilaiStok,
+            'item_minus'  => (int) ($minus->n ?? 0),
+            'nilai_minus' => (float) ($minus->nilai ?? 0),
             'stok_rendah' => $stokRendah,
             'stok_kosong' => $stokKosong,
             'item_selisih_kartu' => $itemSelisih,
@@ -725,6 +765,23 @@ class StokController extends Controller
         });
         $nilaiAwal = $nilaiSekarang - $totalNilaiMasukKeluar;
 
+        // Saldo qty MINUS → nilai rupiah ikut minus = qty × rata-rata harga beli
+        // (rata-rata tertimbang riwayat Pembelian cabang itu; cabang belum pernah beli /
+        // tanpa filter cabang → rata-rata semua cabang; belum pernah dibeli → Rp 0).
+        // Sama dengan kolom Nilai Stok di menu Stok. Saldo qty >= 0 tetap dari Kartu HPP.
+        $rataBeli = (function () use ($kode, $cabang) {
+            $q = DB::table('hpp_kartu')->where('kode_barang', $kode)
+                ->whereIn('ref_tabel', ['trx_beli', 'barang_masuk'])
+                ->where('harga_masuk', '>', 0)->where('qty_masuk', '>', 0);
+            $hit = function ($qq) {
+                $r = $qq->selectRaw('SUM(qty_masuk * harga_masuk) AS n, SUM(qty_masuk) AS q')->first();
+                return ($r && (float) $r->q > 0) ? (float) $r->n / (float) $r->q : null;
+            };
+            $v = $cabang ? $hit((clone $q)->where('cabang', $cabang)) : null;
+            return $v ?? $hit($q) ?? 0.0;
+        })();
+        $nilaiMinus = fn(float $qty, float $nilaiKartu) => $qty < -0.0001 ? round($qty * $rataBeli, 2) : round($nilaiKartu, 2);
+
         // Hitung running balance (qty & rupiah) & filter sampai tanggal yang diminta
         $running = $saldoAwal;
         $runningNilai = $nilaiAwal;
@@ -740,13 +797,15 @@ class StokController extends Controller
                 $m['qty_keluar']    = $h ? round((float) $h->qty_keluar, 2) : ($m['delta'] < 0 ? round(abs($m['delta']), 2) : 0);
                 $m['hpp_satuan']    = $h ? round((float) $h->hpp_satuan, 2) : null;
                 $m['nilai']         = round($nilaiBaris, 2);
-                $m['saldo_nilai']   = round($runningNilai, 2);
+                $m['saldo_nilai']   = $nilaiMinus((float) $running, $runningNilai);
                 unset($m['ref_tabel']);
                 $hasil[] = $m;
             }
         }
         $saldoPerTanggal = count($hasil) ? end($hasil)['saldo_setelah'] : $saldoAwal;
-        $nilaiPerTanggal = count($hasil) ? end($hasil)['saldo_nilai'] : round($nilaiAwal, 2);
+        $nilaiPerTanggal = count($hasil) ? end($hasil)['saldo_nilai'] : $nilaiMinus((float) $saldoAwal, $nilaiAwal);
+        $nilaiAwal       = $nilaiMinus((float) $saldoAwal, $nilaiAwal);
+        $nilaiSekarang   = $nilaiMinus((float) $saldoSekarang, $nilaiSekarang);
 
         return response()->json([
             'kode_barang'       => $kode,
@@ -760,6 +819,7 @@ class StokController extends Controller
             'nilai_awal'        => round($nilaiAwal, 2),
             'nilai_per_tanggal' => round($nilaiPerTanggal, 2),
             'nilai_sekarang'    => round($nilaiSekarang, 2),
+            'rata_beli'         => round($rataBeli, 2),
             'riwayat'           => array_reverse($hasil), // terbaru dulu
         ]);
     }

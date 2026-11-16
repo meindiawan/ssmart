@@ -27,11 +27,13 @@ async function renderStok() {
         <div class="kpi-grid" style="margin-bottom:16px;">
             <div class="kpi"><div class="kpi-label">Total Item</div><div class="kpi-val">${sum.total_item}</div></div>
             <div class="kpi"><div class="kpi-label">Nilai Stok</div><div class="kpi-val" style="font-size:16px;">${R(sum.nilai_stok)}</div></div>
+            ${sum.item_minus > 0 ? `<div class="kpi red"><div class="kpi-label">Nilai Stok Minus (${sum.item_minus} item)</div><div class="kpi-val neg" style="font-size:16px;">${R(sum.nilai_minus)}</div></div>` : ''}
             <div class="kpi red"><div class="kpi-label">Stok Rendah</div><div class="kpi-val neg">${sum.stok_rendah}</div></div>
             <div class="kpi red"><div class="kpi-label">Stok Kosong</div><div class="kpi-val neg">${sum.stok_kosong}</div></div>
         </div>
         <div class="note note-b" style="margin-bottom:12px;"><span class="note-ico">ℹ️</span>
             <span><strong>Nilai Stok</strong> diambil dari Kartu HPP (rata-rata pembelian per cabang) — total KPI sama dengan Persediaan Akhir di Laba Rugi. Barang yang belum pernah dibeli bernilai Rp 0.
+            <br><strong>Stok minus</strong> dinilai <em>qty × rata-rata harga beli</em> (rupiahnya ikut minus); kalau barang belum pernah dibeli = Rp 0. Totalnya tampil terpisah di KPI "Nilai Stok Minus" dan tidak mengurangi total Nilai Stok.
             ${sum.item_selisih_kartu > 0 ? `<br>⚠️ <strong>${sum.item_selisih_kartu} item</strong> qty stoknya berbeda dengan qty Kartu HPP (tanda ⚠️ di kolom Nilai Stok) — biasanya karena stok minus di satu cabang sementara pembelian ada di cabang lain, Saldo Awal, atau stok berubah manual. Periksa lewat Kartu HPP / Mutasi.` : ''}</span></div>
         <div class="box">
             <div class="box-hd">
@@ -78,7 +80,7 @@ async function renderStok() {
                             <td class="r"><strong style="font-size:15px;color:${kosong?'var(--neg)':rendah?'var(--warn)':'inherit'}">${fmtQty(s.qty)}</strong></td>
                             <td style="font-size:12px;">${esc(s.satuan1||'PCS')}</td>
                             <td class="r" style="font-size:12px;color:var(--ink3);">${s.stok_min>0?fmtQty(s.stok_min):'–'}</td>
-                            <td class="r" style="font-size:12px;">${R(s.nilai_stok||0)}${s.selisih_kartu ? ` <span title="Qty Kartu HPP = ${fmtQty(s.qty_kartu)} (qty stok = ${fmtQty(s.qty)}). Nilai dihitung dari Kartu HPP." style="cursor:help;">⚠️</span>` : ''}</td>
+                            <td class="r" style="font-size:12px;${s.nilai_stok<0?'color:var(--neg);':''}" ${s.nilai_stok<0?`title="Stok minus ${fmtQty(s.qty)} × rata-rata beli ${R(s.harga_rata_beli)}"`:''}>${R(s.nilai_stok||0)}${s.selisih_kartu ? ` <span title="Qty Kartu HPP = ${fmtQty(s.qty_kartu)} (qty stok = ${fmtQty(s.qty)}). Nilai dihitung dari Kartu HPP." style="cursor:help;">⚠️</span>` : ''}</td>
                             <td>${kosong
                                 ? '<span class="badge badge-out">Kosong</span>'
                                 : rendah
