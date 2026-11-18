@@ -255,15 +255,18 @@ window.lapLihatAkun = async (kode, nama, dari, sampai, periodeLabel) => {
                 <th class="r">Debit</th>
                 <th class="r">Kredit</th>
                 <th class="r">Kumulatif</th>
+                ${res.ada_hpp ? '<th class="r">HPP</th><th class="r">Laba</th>' : ''}
             </tr></thead>
             <tbody>
-                ${rows.map(x => `<tr class="row-click" onclick="bukaBentukanRef('${esc(x.ref)}')" title="Klik untuk lihat bentukan jurnal lengkap transaksi ini">
+                ${rows.map(x => `<tr class="row-click" ${res.ada_hpp && x.hpp_status === 'minus' ? 'style="background:rgba(220,60,60,.10);"' : ''} onclick="bukaBentukanRef('${esc(x.ref)}')" title="Klik untuk lihat bentukan jurnal lengkap transaksi ini">
                     <td style="font-size:12px;padding:4px 6px;white-space:nowrap;">${fmtTgl(x.tgl)}</td>
                     <td style="font-size:11px;padding:4px 6px;white-space:nowrap;"><span class="badge badge-noppn">${esc(x.ref)}</span></td>
                     <td style="font-size:12px;color:var(--ink2);padding:4px 6px;">${esc(x.ket)}</td>
                     <td class="r laba-pos" style="padding:4px 6px;">${x.D ? R(x.D) : ''}</td>
                     <td class="r laba-neg" style="padding:4px 6px;">${x.K ? R(x.K) : ''}</td>
                     <td class="r" style="padding:4px 6px;font-weight:600;">${R(x.kumulatif)}</td>
+                    ${res.ada_hpp ? `<td class="r" style="padding:4px 6px;${x.hpp_status === 'nol' ? 'color:var(--ink3);' : ''}">${x.hpp_status === 'nol' ? '0' : R(x.hpp)}</td>
+                    <td class="r" style="padding:4px 6px;" title="Omzet DPP − HPP">${x.hpp_status === 'nol' ? '<span style="color:var(--ink3);">HPP 0</span>' : (x.laba < 0 ? `<span class="laba-neg" style="font-weight:700;">−${R(Math.abs(x.laba))} 🔴</span>` : `<span class="laba-pos">${R(x.laba)}</span>`)}</td>` : ''}
                 </tr>`).join('')}
             </tbody>
             <tfoot>
@@ -272,6 +275,7 @@ window.lapLihatAkun = async (kode, nama, dari, sampai, periodeLabel) => {
                     <td class="r" style="padding:6px;">${R(res.total_D)}</td>
                     <td class="r" style="padding:6px;">${R(res.total_K)}</td>
                     <td class="r" style="padding:6px;">${R(res.saldo)}</td>
+                    ${res.ada_hpp ? `<td class="r" style="padding:6px;">${R(res.total_hpp)}</td><td class="r" style="padding:6px;">${res.jml_minus ? `<span class="laba-neg">${res.jml_minus} minus</span>` : ''}</td>` : ''}
                 </tr>
             </tfoot>
         </table>

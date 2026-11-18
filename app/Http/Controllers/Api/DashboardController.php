@@ -180,7 +180,9 @@ class DashboardController extends Controller
                 // pernah bertambah dari Penjualan padahal $acc & $dpp sudah
                 // dihitung di atas (bandingkan dengan blok Pembelian di bawah).
                 $lines[] = $this->jl($t->tgl, $t->cabang, $ref, $ket, $acc, $tot, 0);
-                $lines[] = $this->jl($t->tgl, $t->cabang, $ref, $ket, $kena ? '4101' : '4102', 0, $dpp);
+                $lPend = $this->jl($t->tgl, $t->cabang, $ref, $ket, $kena ? '4101' : '4102', 0, $dpp);
+                $lPend['trx_jual_id'] = $t->id; // dipakai akunTrace() utk menampilkan HPP & laba per baris
+                $lines[] = $lPend;
                 if ($kena) $lines[] = $this->jl($t->tgl, $t->cabang, $ref, $ket, '2102', 0, $pvn);
                 // HPP baris ini: dari Kartu HPP (App\Services\HppService) — rata-rata
                 // bergerak PER CABANG dari riwayat barang masuk/keluar ASLI, bukan
@@ -1740,10 +1742,30 @@ class DashboardController extends Controller
         }
         unset($r);
 
+        // Akun Pendapatan Penjualan (4101/4102): tambahkan HPP & laba tiap baris (dari Kartu HPP,
+        // dasar yang sama dgn Jurnal/Laba Rugi) supaya kelihatan baris mana yang laba-nya MINUS.
+        $adaHpp = false; $totHpp = 0; $jmlMinus = 0;
+        if (in_array($kode, ['4101', '4102'], true)) {
+            $ids = array_values(array_filter(array_column($rows, 'trx_jual_id')));
+            $hppMap = $ids ? app(\App\Services\HppService::class)->hppMapUntukJurnal('trx_jual', $ids) : [];
+            $adaHpp = true;
+            foreach ($rows as &$r) {
+                $h = (float) ($hppMap[$r['trx_jual_id'] ?? 0] ?? 0);
+                $h = $h > 0 ? round($h) : 0;
+                $r['hpp']  = $h;
+                $r['laba'] = $r['K'] - $h;
+                $r['hpp_status'] = $h <= 0 ? 'nol' : ($r['K'] < $h ? 'minus' : 'ok');
+                $totHpp += $h;
+                if ($r['hpp_status'] === 'minus') $jmlMinus++;
+            }
+            unset($r);
+        }
+
         $totD = array_sum(array_column($rows, 'D'));
         $totK = array_sum(array_column($rows, 'K'));
 
         return response()->json([
+            'ada_hpp'  => $adaHpp, 'total_hpp' => $totHpp, 'jml_minus' => $jmlMinus,
             'akun'     => $akun,
             'data'     => $rows,
             'total_D'  => $totD,

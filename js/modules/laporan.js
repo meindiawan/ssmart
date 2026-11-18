@@ -255,15 +255,18 @@ window.lapLihatAkun = async (kode, nama, dari, sampai, periodeLabel) => {
                 <th class="r">Debit</th>
                 <th class="r">Kredit</th>
                 <th class="r">Kumulatif</th>
+                ${res.ada_hpp ? '<th class="r">HPP</th><th class="r">Laba</th>' : ''}
             </tr></thead>
             <tbody>
-                ${rows.map(x => `<tr class="row-click" onclick="bukaBentukanRef('${esc(x.ref)}')" title="Klik untuk lihat bentukan jurnal lengkap transaksi ini">
+                ${rows.map(x => `<tr class="row-click" ${res.ada_hpp && x.hpp_status === 'minus' ? 'style="background:rgba(220,60,60,.10);"' : ''} onclick="bukaBentukanRef('${esc(x.ref)}')" title="Klik untuk lihat bentukan jurnal lengkap transaksi ini">
                     <td style="font-size:12px;padding:4px 6px;white-space:nowrap;">${fmtTgl(x.tgl)}</td>
                     <td style="font-size:11px;padding:4px 6px;white-space:nowrap;"><span class="badge badge-noppn">${esc(x.ref)}</span></td>
                     <td style="font-size:12px;color:var(--ink2);padding:4px 6px;">${esc(x.ket)}</td>
                     <td class="r laba-pos" style="padding:4px 6px;">${x.D ? R(x.D) : ''}</td>
                     <td class="r laba-neg" style="padding:4px 6px;">${x.K ? R(x.K) : ''}</td>
                     <td class="r" style="padding:4px 6px;font-weight:600;">${R(x.kumulatif)}</td>
+                    ${res.ada_hpp ? `<td class="r" style="padding:4px 6px;${x.hpp_status === 'nol' ? 'color:var(--ink3);' : ''}">${x.hpp_status === 'nol' ? '0' : R(x.hpp)}</td>
+                    <td class="r" style="padding:4px 6px;" title="Omzet DPP − HPP">${x.hpp_status === 'nol' ? '<span style="color:var(--ink3);">HPP 0</span>' : (x.laba < 0 ? `<span class="laba-neg" style="font-weight:700;">−${R(Math.abs(x.laba))} 🔴</span>` : `<span class="laba-pos">${R(x.laba)}</span>`)}</td>` : ''}
                 </tr>`).join('')}
             </tbody>
             <tfoot>
@@ -272,6 +275,7 @@ window.lapLihatAkun = async (kode, nama, dari, sampai, periodeLabel) => {
                     <td class="r" style="padding:6px;">${R(res.total_D)}</td>
                     <td class="r" style="padding:6px;">${R(res.total_K)}</td>
                     <td class="r" style="padding:6px;">${R(res.saldo)}</td>
+                    ${res.ada_hpp ? `<td class="r" style="padding:6px;">${R(res.total_hpp)}</td><td class="r" style="padding:6px;">${res.jml_minus ? `<span class="laba-neg">${res.jml_minus} minus</span>` : ''}</td>` : ''}
                 </tr>
             </tfoot>
         </table>
@@ -568,12 +572,33 @@ async function renderLabaRugi() {
                 (kalau kodenya ternyata barcode barang yang sudah ada), lalu masukkan sisanya ke Master Barang.
             </span>
         </div>` : ''}
+        ${(r.ringkasan_penjualan_hpp && (r.ringkasan_penjualan_hpp.jml_minus > 0 || r.ringkasan_penjualan_hpp.laba_ber_hpp < 0)) ? (() => { const k = r.ringkasan_penjualan_hpp;
+            const lt = Number(k.laba_ber_hpp || 0);
+            return `
+        <div class="note note-y" style="margin-bottom:12px;border-color:var(--red);">
+            <span class="note-ico">🔴</span>
+            <span>
+                <strong>${Number(k.jml_minus).toLocaleString('id-ID')} baris penjualan laba-nya MINUS</strong> — HPP-nya lebih besar dari omzet barisnya (total selisih <strong>−${R(Math.abs(k.rugi_minus))}</strong>).
+                <div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,.04);border-radius:6px;font-size:12px;line-height:1.7;">
+                    Omzet barang (DPP): <strong>${R(k.penjualan_dpp)}</strong><br>
+                    − Terjual dengan HPP Rp 0: <strong>${R(k.hpp0_dpp)}</strong><br>
+                    = Omzet ber-HPP: <strong>${R(k.ber_hpp_dpp)}</strong><br>
+                    − HPP penjualan (Kartu HPP): <strong>${R(k.hpp_penjualan)}</strong><br>
+                    = Laba baris ber-HPP: <strong class="${lt < 0 ? 'laba-neg' : 'laba-pos'}">${lt < 0 ? '−' + R(Math.abs(lt)) : R(lt)}</strong>
+                    <span style="color:var(--ink3);">— kalau minus, berarti harga jual (DPP) sebagian barang di bawah HPP-nya, bukan salah hitung.</span>
+                </div>
+                <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+                    <button class="btn btn-p btn-sm" onclick="lihatBarangLabaMinus('${f.dari || ''}','${f.sampai || ''}')">📊 Rekap per barang minus</button>
+                    <button class="btn btn-g btn-sm" onclick="bukaRiwayatJualLaba('${f.dari || ''}','${f.sampai || ''}','minus')">🧾 Lihat baris &amp; nota-nya di Riwayat Penjualan</button>
+                </div>
+            </span>
+        </div>`; })() : ''}
         ${(r.barang_tanpa_modal && r.barang_tanpa_modal.length) ? `
         <div class="note note-y" style="margin-bottom:12px;">
             <span class="note-ico">⚠️</span>
             <span>
-                <strong>${r.barang_tanpa_modal.length} barang</strong> sudah terjual tapi <strong>belum ada Pembelian</strong>
-                (di cabang & tanggal penjualannya) — sehingga HPP barang ini terhitung Rp 0 dan
+                <strong>${r.barang_tanpa_modal.length} barang</strong> sudah terjual tapi <strong>belum pernah ada Pembelian sama sekali</strong>
+                (di cabang mana pun) — sehingga HPP barang ini terhitung Rp 0 dan
                 <strong>Laba Kotor/Bersih di bawah ini jadi lebih besar dari kenyataan</strong>.
                 Input/Import Pembelian barang-barang berikut (HPP dihitung dari Pembelian, bukan dari Harga Modal Master),
                 lalu daftar ini otomatis berkurang.
@@ -582,8 +607,9 @@ async function renderLabaRugi() {
                         <strong>Rekonsiliasi (semua nilai DPP, sama dasarnya dengan Pendapatan):</strong><br>
                         Penjualan barang: <strong>${R(k.penjualan_dpp)}</strong><br>
                         − Terjual dengan HPP Rp 0 (daftar di bawah): <strong>${R(k.hpp0_dpp)}</strong><br>
-                        = Terjual dari Pembelian (HPP &gt; 0): <strong>${R(k.ber_hpp_dpp)}</strong>
-                        ${hr ? `<br>Pembelian periode ini (DPP): <strong>${R(hr.pembelian)}</strong> <span style="color:var(--ink3);">— penjualan ber-HPP seharusnya tidak jauh di atas angka ini kalau periode ini awal pencatatan.</span>` : ''}
+                        = Terjual dengan HPP &gt; 0: <strong>${R(k.ber_hpp_dpp)}</strong>
+                        ${k.hpp_penjualan !== undefined ? `<br>− HPP penjualan (Kartu HPP): <strong>${R(k.hpp_penjualan)}</strong><br>= Laba baris ber-HPP: <strong class="${k.laba_ber_hpp < 0 ? 'laba-neg' : 'laba-pos'}">${k.laba_ber_hpp < 0 ? '−' + R(Math.abs(k.laba_ber_hpp)) : R(k.laba_ber_hpp)}</strong>` : ''}
+                        ${hr ? `<br>Pembelian periode ini (DPP): <strong>${R(hr.pembelian)}</strong> <span style="color:var(--ink3);">— penjualan ber-HPP boleh jauh di atas angka ini: unit yang dijual melebihi stok pembelian dinilai rata-rata riwayat pembelian (baris "HPP unit terjual melebihi stok pembelian" di bawah), bukan 0.</span>` : ''}
                     </div>`; })() : ''}
                 <div style="margin-top:6px;font-size:12px;">
                     Daftar teratas (omzet DPP):
