@@ -104,6 +104,7 @@ window.lihatBarangLabaMinus = async (dari, sampai, cabang) => {
                 <input class="finput" placeholder="🔍 Cari kode atau nama barang…" style="flex:1;min-width:220px;"
                        oninput="document.getElementById('lblBody').innerHTML = window._lblBaris(window._lblCari(this.value))">
                 <button class="btn btn-p btn-sm" onclick="bukaRiwayatJualLaba('${esc(dari || '')}','${esc(sampai || '')}','minus')">Lihat baris & nota-nya →</button>
+                <button class="btn btn-g btn-sm" onclick="unduhLabaMinusExcel('${esc(dari || '')}','${esc(sampai || '')}','${esc(cab || '')}')">⬇️ Download Excel</button>
             </div>
             <div style="max-height:55vh;overflow:auto;">
                 <table>
@@ -115,6 +116,58 @@ window.lihatBarangLabaMinus = async (dari, sampai, cabang) => {
     } catch (err) {
         openM(`<div class="mhd"><h3>🔴 Barang dengan Laba Minus</h3><button class="mclose" onclick="closeM()">×</button></div><div class="mbd"><div class="note note-y"><span class="note-ico">⚠️</span><span>${esc(err.message)}</span></div></div>`);
     }
+};
+
+/** Download Excel laporan Laba Minus: 3 sheet (Ringkasan, Rekap per Barang, Detail Baris/Nota). */
+window.unduhLabaMinusExcel = async (dari, sampai, cabang) => {
+    try {
+        toast('Menyiapkan file Excel…');
+        const cab = cabang !== undefined ? cabang : getCabang();
+        const [rb, rj] = await Promise.all([
+            apiGet('/transaksi/jual/laba-minus-barang' + buildQuery({ cabang: cab, dari, sampai })),
+            apiGet('/transaksi/jual' + buildQuery({ cabang: cab, dari, sampai, laba: 'minus', per_page: 99999, page: 1 })),
+        ]);
+        const s = rj.summary || {};
+        const berHpp = (s.omzet_dpp || 0) - (s.omzet_hpp0 || 0);
+        const labaBer = berHpp - (s.hpp_total || 0);
+        const ringkasan = [
+            ['LAPORAN BARIS PENJUALAN LABA MINUS'],
+            ['Cabang', cab || 'Semua'],
+            ['Periode', (dari || '-') + ' s/d ' + (sampai || '-')],
+            [],
+            ['Omzet barang (DPP)', s.omzet_dpp || 0],
+            ['− Terjual dengan HPP Rp 0', s.omzet_hpp0 || 0],
+            ['= Omzet ber-HPP', berHpp],
+            ['− HPP penjualan (Kartu HPP)', s.hpp_total || 0],
+            ['= Laba baris ber-HPP', labaBer],
+            [],
+            ['Jumlah baris laba minus', s.jml_minus || 0],
+            ['Total selisih (rugi) baris minus', s.rugi_minus || 0],
+            ['Jumlah barang laba minus', rb.jml_barang || 0],
+        ];
+        const rekap = (rb.data || []).map((b, i) => ({
+            'No': i + 1, 'Kode': b.kode, 'Nama Barang': b.nama, 'Jumlah Baris': b.baris, 'Baris Minus': b.baris_minus,
+            'Terjual (qty)': b.qty, 'Harga Jual/unit (DPP)': b.dpp_satuan, 'HPP/unit': b.hpp_satuan,
+            'Omzet DPP': b.omzet, 'HPP': b.hpp, 'Laba': b.laba, 'Rasio HPP/Omzet': b.rasio,
+            'Baris pakai rata-rata riwayat': b.baris_melebihi,
+        }));
+        const detail = (rj.data || []).map((t, i) => ({
+            'No': i + 1, 'Tanggal': t.tgl, 'Cabang': t.cabang, 'No. Nota': t.no_nota || t.no_referensi || t.no_faktur || '',
+            'Kode': t.kode_barang, 'Nama Barang': t.nama_barang || '', 'Qty': Number(t.qty), 'Satuan': t.satuan || '',
+            'Harga': Number(t.harga), 'Diskon': Number(t.diskon || 0), 'PPN': t.ppn_efektif || '',
+            'Omzet DPP': t.dpp, 'HPP': t.hpp_kartu, 'HPP/unit': t.hpp_satuan, 'Laba': t.laba,
+            'Penyebab': t.hpp_sebab || '',
+        }));
+        const wb = XLSX.utils.book_new();
+        const w1 = XLSX.utils.aoa_to_sheet(ringkasan); w1['!cols'] = [{ wch: 36 }, { wch: 22 }];
+        XLSX.utils.book_append_sheet(wb, w1, 'Ringkasan');
+        const w2 = XLSX.utils.json_to_sheet(rekap); w2['!cols'] = [6,14,40,12,12,12,20,14,16,16,16,14,26].map(wch => ({ wch }));
+        XLSX.utils.book_append_sheet(wb, w2, 'Rekap per Barang');
+        const w3 = XLSX.utils.json_to_sheet(detail); w3['!cols'] = [6,12,16,18,14,40,8,8,14,12,10,16,16,14,14,80].map(wch => ({ wch }));
+        XLSX.utils.book_append_sheet(wb, w3, 'Detail Baris Minus');
+        XLSX.writeFile(wb, `laba-minus-${(dari || 'awal')}_${(sampai || 'akhir')}.xlsx`);
+        toast(`Excel diunduh: ${rekap.length} barang, ${detail.length} baris`);
+    } catch (err) { toast('Gagal unduh Excel: ' + err.message, 'err'); }
 };
 
 window.setTrxPerPage = (jenis, elId, val) => {
@@ -813,6 +866,8 @@ async function renderJualBeli(jenis, elId, page = 1) {
             ${chip('hpp0', `⚪ HPP 0 (${Number(k.jml_hpp0 || 0).toLocaleString('id-ID')})`)}
             ${chip('plus', '🟢 Laba ≥ 0')}
             <button class="btn btn-blue btn-sm" style="margin-left:auto;" onclick="lihatBarangLabaMinus('${esc(f.dari || '')}','${esc(f.sampai || '')}')" title="Rekap per barang: barang mana yang HPP-nya lebih besar dari omzet">📊 Rekap per barang minus</button>
+            <button class="btn btn-g btn-sm" onclick="exportJualBeliSemua('jual')" title="Download Excel baris penjualan sesuai filter laba & tanggal yang aktif (lengkap dengan HPP & Laba)">⬇️ Download Excel${f.laba ? ' (filter ini)' : ''}</button>
+            <button class="btn btn-g btn-sm" onclick="unduhLabaMinusExcel('${esc(f.dari || '')}','${esc(f.sampai || '')}')" title="Laporan laba minus lengkap: Ringkasan + Rekap per Barang + Detail Baris">⬇️ Laporan Laba Minus</button>
         </div></div>`;
         })();
 
@@ -820,7 +875,7 @@ async function renderJualBeli(jenis, elId, page = 1) {
         ${exportBar(`tbl_${jenis}`, `data-${jenis}`, elId, isJ ? 'Data Penjualan' : 'Data Pembelian')}
         <div class="export-bar no-print" style="margin-top:-8px;">
             <span class="lbl"></span>
-            <button class="btn btn-blue btn-sm" onclick="exportJualBeliSemua('${jenis}')" title="Export SEMUA data (bukan cuma yang tampil di halaman ini) sesuai filter cabang/tanggal yang lagi aktif">📥 Export Semua (${jumlahTrx.toLocaleString('id-ID')} baris)</button>
+            <button class="btn btn-blue btn-sm" onclick="exportJualBeliSemua('${jenis}')" title="Export SEMUA data (bukan cuma yang tampil di halaman ini) sesuai filter cabang/tanggal yang lagi aktif">📥 Export Semua${isJ && f.laba ? ' (filter laba)' : ''} (${((isJ && f.laba) ? (meta.total ?? list.length) : jumlahTrx).toLocaleString('id-ID')} baris)</button>
             <button class="btn btn-g btn-sm" onclick="perbaikiNomorDobel('${jenis}','${elId}')" title="Cari nomor transaksi (no. nota) yang kepakai dobel oleh transaksi beda tanggal/cabang (biasanya dari import lama), lalu otomatis dipisah jadi nomor unik">🔧 Perbaiki Nomor Dobel</button>
         </div>
         ${filterBarHTML}

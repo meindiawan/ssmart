@@ -590,6 +590,7 @@ async function renderLabaRugi() {
                 <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
                     <button class="btn btn-p btn-sm" onclick="lihatBarangLabaMinus('${f.dari || ''}','${f.sampai || ''}')">📊 Rekap per barang minus</button>
                     <button class="btn btn-g btn-sm" onclick="bukaRiwayatJualLaba('${f.dari || ''}','${f.sampai || ''}','minus')">🧾 Lihat baris &amp; nota-nya di Riwayat Penjualan</button>
+                    <button class="btn btn-g btn-sm" onclick="unduhLabaMinusExcel('${f.dari || ''}','${f.sampai || ''}')">⬇️ Download Excel</button>
                 </div>
             </span>
         </div>`; })() : ''}

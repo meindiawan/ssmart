@@ -70,7 +70,10 @@ async function exportJualBeliSemua(jenis) {
         const cab = getCabang();
         // per_page=0 → backend TransaksiController::getJual/getBeli menganggap
         // ini "Semua" (lihat: if ($perPage <= 0 ...) $perPage = 99999;)
-        const q   = buildQuery({ cabang: cab, per_page: 0, dari: f.dari, sampai: f.sampai });
+        const qp  = { cabang: cab, per_page: 0, dari: f.dari, sampai: f.sampai };
+        // Penjualan: ikut filter Laba (minus/HPP 0/laba ≥ 0) & kotak cari yang sedang aktif
+        if (isJ) { if (f.laba) qp.laba = f.laba; if (f.search) qp.search = f.search; }
+        const q   = buildQuery(qp);
         const res  = await apiGet(`/transaksi/${jenis}` + q);
         const list = res.data || [];
 
@@ -91,6 +94,14 @@ async function exportJualBeliSemua(jenis) {
                 'Total':         tot,
                 'Bayar':         t.bayar,
             };
+            if (isJ) {
+                row['Omzet DPP']  = Number(t.dpp ?? 0);
+                row['HPP']        = Number(t.hpp_kartu ?? 0);
+                row['HPP/unit']   = Number(t.hpp_satuan ?? 0);
+                row['Laba']       = Number(t.laba ?? 0);
+                row['Status HPP'] = t.hpp_status === 'minus' ? 'MINUS' : (t.hpp_status === 'nol' ? 'HPP 0' : 'OK');
+                row['Keterangan HPP'] = t.hpp_sebab || '';
+            }
             if (!isJ) { row['Supplier'] = t.supplier || ''; row['Operator'] = t.operator || ''; }
             row['Keterangan'] = t.keterangan || '';
             return row;
@@ -111,7 +122,7 @@ async function exportJualBeliSemua(jenis) {
         });
 
         XLSX.utils.book_append_sheet(wb, ws, isJ ? 'Penjualan' : 'Pembelian');
-        XLSX.writeFile(wb, `data-${jenis}-semua-${today()}.xlsx`);
+        XLSX.writeFile(wb, `data-${jenis}-${isJ && f.laba ? 'laba-' + f.laba + '-' : ''}semua-${today()}.xlsx`);
         toast(`${list.length.toLocaleString('id-ID')} baris berhasil diexport`);
 
     } catch (e) {
