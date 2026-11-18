@@ -1461,15 +1461,24 @@ class DashboardController extends Controller
         $nol = "(hpp_kartu.id IS NULL OR hpp_kartu.nilai_keluar <= 0)";
         $r = $this->queryPenjualanHpp($cabang, $dari, $sampai)
             ->selectRaw("COALESCE(SUM($dpp),0) AS total, COALESCE(SUM(CASE WHEN $nol THEN $dpp ELSE 0 END),0) AS hpp0, "
-                . "COUNT(DISTINCT CASE WHEN $nol THEN trx_jual.kode_barang END) AS jml_barang_hpp0")
+                . "COUNT(DISTINCT CASE WHEN $nol THEN trx_jual.kode_barang END) AS jml_barang_hpp0, "
+                // HPP baris penjualan yang ber-HPP (dibulatkan per baris, sama dgn Jurnal) + baris yang HPP-nya > omzet barisnya
+                . "COALESCE(SUM(CASE WHEN $nol THEN 0 ELSE ROUND(hpp_kartu.nilai_keluar) END),0) AS hpp_penjualan, "
+                . "COALESCE(SUM(CASE WHEN $nol THEN 0 WHEN ROUND($dpp) < ROUND(hpp_kartu.nilai_keluar) THEN 1 ELSE 0 END),0) AS jml_minus, "
+                . "COALESCE(SUM(CASE WHEN $nol THEN 0 WHEN ROUND($dpp) < ROUND(hpp_kartu.nilai_keluar) THEN ROUND($dpp) - ROUND(hpp_kartu.nilai_keluar) ELSE 0 END),0) AS rugi_minus")
             ->first();
         $total = (float) ($r->total ?? 0);
         $hpp0  = (float) ($r->hpp0 ?? 0);
+        $hppJual = (float) ($r->hpp_penjualan ?? 0);
         return [
             'penjualan_dpp'   => round($total),
             'hpp0_dpp'        => round($hpp0),
             'ber_hpp_dpp'     => round($total - $hpp0),   // penjualan yang HPP-nya dari Pembelian
             'jml_barang_hpp0' => (int) ($r->jml_barang_hpp0 ?? 0),
+            'hpp_penjualan'   => round($hppJual),                      // Σ HPP baris penjualan (Kartu HPP)
+            'laba_ber_hpp'    => round($total - $hpp0 - $hppJual),     // omzet ber-HPP − HPP penjualan (bisa MINUS)
+            'jml_minus'       => (int) ($r->jml_minus ?? 0),           // jumlah baris HPP > omzet baris
+            'rugi_minus'      => round((float) ($r->rugi_minus ?? 0)), // total selisih baris-baris itu (negatif)
         ];
     }
 

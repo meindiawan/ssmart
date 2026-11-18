@@ -306,16 +306,32 @@ class TransaksiController extends Controller
     }
 
     // ─── PENJUALAN ───────────────────────────────────────────────────────────
-    public function getJual(Request $request)
+    /** Tarif PPN (desimal) dari Settings — sama dengan HppService::getTarif(). */
+    protected function tarifPpnJual(): float
     {
-        // Query dasar (join + filter) TANPA select, supaya bisa di-clone dengan
-        // aman untuk query ringkasan (aggregate) tanpa ikut membawa kolom-kolom
-        // non-aggregate dari tabel `barang` (yang bisa bikin error di MySQL
-        // dengan sql_mode ONLY_FULL_GROUP_BY kalau dicampur COUNT/SUM tanpa GROUP BY).
+        $st = DB::table('settings')->where('key', 'tarif_ppn')->first();
+        return $st ? (float) $st->value / 100 : 0.11;
+    }
+
+    /** Ekspresi SQL omzet DPP 1 baris penjualan — dasar yang SAMA dengan Pendapatan di
+     *  Laba Rugi (qty × harga − diskon, lalu di-DPP-kan kalau Kena PPN). Butuh join `barang`. */
+    protected function sqlDppJual(): string
+    {
+        $div = sprintf('%.8F', 1 + $this->tarifPpnJual());
+        return "((trx_jual.qty * trx_jual.harga - COALESCE(trx_jual.diskon, 0)) / "
+             . "CASE WHEN COALESCE(NULLIF(trx_jual.ppn, ''), barang.ppn) = 'Kena PPN' THEN $div ELSE 1 END)";
+    }
+
+    /** Query dasar Riwayat Penjualan + Kartu HPP per baris (satu baris Kartu per trx_jual). */
+    protected function baseJualHpp(Request $request)
+    {
         $base = DB::table('trx_jual')
-            ->leftJoin('barang', 'trx_jual.kode_barang', '=', 'barang.kode');
+            ->leftJoin('barang', 'trx_jual.kode_barang', '=', 'barang.kode')
+            ->leftJoin('hpp_kartu as hk', function ($j) {
+                $j->on('hk.ref_id', '=', 'trx_jual.id')->where('hk.ref_tabel', '=', 'trx_jual');
+            });
         if ($request->get('cabang')) $base->where('trx_jual.cabang', $request->get('cabang'));
-        $this->applyFilterTanggal($base, $request, 'tgl');
+        $this->applyFilterTanggal($base, $request, 'trx_jual.tgl');
         // Pencarian bebas: nama/kode barang, no. nota, atau keterangan — supaya
         // 1 kotak cari saja cukup utk menemukan transaksi tanpa perlu tahu
         // filternya harus yang mana dulu.
@@ -327,28 +343,160 @@ class TransaksiController extends Controller
                   ->orWhere('trx_jual.keterangan', 'like', "%$s%");
             });
         }
+        return $base;
+    }
+
+    public function getJual(Request $request)
+    {
+        // Query dasar (join + filter) TANPA select, supaya bisa di-clone dengan
+        // aman untuk query ringkasan (aggregate) tanpa ikut membawa kolom-kolom
+        // non-aggregate dari tabel `barang` (yang bisa bikin error di MySQL
+        // dengan sql_mode ONLY_FULL_GROUP_BY kalau dicampur COUNT/SUM tanpa GROUP BY).
+        $base = $this->baseJualHpp($request);
+
+        $dpp   = $this->sqlDppJual();
+        $adaHpp = "(hk.id IS NOT NULL AND hk.nilai_keluar > 0)";
 
         // Ringkasan (jumlah transaksi & total nominal) dihitung dari SELURUH
         // data yang cocok dengan filter — bukan cuma 30/50 baris di halaman
         // yang sedang ditampilkan — supaya kartu "X transaksi · Total: Rp..."
-        // selalu akurat berapa pun jumlah datanya.
+        // selalu akurat berapa pun jumlah datanya. Ditambah ringkasan HPP & laba
+        // (DPP, sama dasarnya dgn Laba Rugi) + jumlah baris yang laba-nya MINUS.
+        // Dihitung SEBELUM filter laba (minus/hpp0) supaya angkanya tetap utuh.
         $summary = (clone $base)
-            ->selectRaw('COUNT(*) as jumlah, COALESCE(SUM(trx_jual.qty*trx_jual.harga - COALESCE(trx_jual.diskon,0)),0) as total_nominal')
+            ->selectRaw("COUNT(*) as jumlah,
+                COALESCE(SUM(trx_jual.qty*trx_jual.harga - COALESCE(trx_jual.diskon,0)),0) as total_nominal,
+                COALESCE(SUM(ROUND($dpp)),0) as omzet_dpp,
+                COALESCE(SUM(CASE WHEN $adaHpp THEN ROUND(hk.nilai_keluar) ELSE 0 END),0) as hpp_total,
+                COALESCE(SUM(CASE WHEN $adaHpp THEN 0 ELSE ROUND($dpp) END),0) as omzet_hpp0,
+                COALESCE(SUM(CASE WHEN $adaHpp THEN 0 ELSE 1 END),0) as jml_hpp0,
+                COALESCE(SUM(CASE WHEN $adaHpp AND ROUND($dpp) < ROUND(hk.nilai_keluar) THEN 1 ELSE 0 END),0) as jml_minus,
+                COALESCE(SUM(CASE WHEN $adaHpp AND ROUND($dpp) < ROUND(hk.nilai_keluar) THEN ROUND($dpp) - ROUND(hk.nilai_keluar) ELSE 0 END),0) as rugi_minus,
+                COALESCE(SUM(CASE WHEN $adaHpp AND ROUND($dpp) >= ROUND(hk.nilai_keluar) THEN ROUND($dpp) - ROUND(hk.nilai_keluar) ELSE 0 END),0) as laba_plus")
             ->first();
 
+        // Filter laba: ?laba=minus (HPP > omzet baris) | hpp0 (belum ada HPP) | plus (laba ≥ 0, ber-HPP)
+        $filterLaba = (string) $request->get('laba');
+        if ($filterLaba === 'minus')     $base->whereRaw("$adaHpp AND ROUND($dpp) < ROUND(hk.nilai_keluar)");
+        elseif ($filterLaba === 'hpp0')  $base->whereRaw("NOT $adaHpp");
+        elseif ($filterLaba === 'plus')  $base->whereRaw("$adaHpp AND ROUND($dpp) >= ROUND(hk.nilai_keluar)");
+
         $q = $base->select('trx_jual.*', 'barang.nama as nama_barang', 'barang.ppn as ppn_master', 'barang.modal', 'barang.harga_jual')
-            ->selectRaw('COALESCE(trx_jual.ppn, barang.ppn) as ppn_efektif')
-            ->selectRaw("COALESCE((SELECT hk.nilai_keluar FROM hpp_kartu hk WHERE hk.ref_tabel = 'trx_jual' AND hk.ref_id = trx_jual.id LIMIT 1), 0) as hpp_kartu")
-            ->orderByDesc('tgl')->orderByDesc('trx_jual.id');
+            ->selectRaw('COALESCE(NULLIF(trx_jual.ppn, \'\'), barang.ppn) as ppn_efektif')
+            ->selectRaw('COALESCE(hk.nilai_keluar, 0) as hpp_kartu')
+            ->selectRaw('hk.hpp_satuan as hpp_satuan_kartu, hk.keterangan as hpp_ket_kartu, hk.saldo_qty_sebelum as hpp_saldo_sebelum')
+            ->orderByDesc('trx_jual.tgl')->orderByDesc('trx_jual.id');
 
         $perPage = (int) $request->get('per_page', 50);
         if ($perPage <= 0 || $perPage > 99000) $perPage = 99999; // "Semua"
 
-        return $this->paginated($q->paginate($perPage), [
+        $paged = $q->paginate($perPage);
+        $tarif = $this->tarifPpnJual();
+        $paged->getCollection()->transform(fn($r) => $this->lengkapiHppJual($r, $tarif));
+
+        return $this->paginated($paged, [
             'summary' => [
                 'jumlah'        => (int) $summary->jumlah,
                 'total_nominal' => (float) $summary->total_nominal,
+                'omzet_dpp'     => (float) $summary->omzet_dpp,
+                'hpp_total'     => (float) $summary->hpp_total,
+                'laba_kotor'    => (float) $summary->omzet_dpp - (float) $summary->hpp_total,
+                'omzet_hpp0'    => (float) $summary->omzet_hpp0,
+                'jml_hpp0'      => (int) $summary->jml_hpp0,
+                'jml_minus'     => (int) $summary->jml_minus,
+                'rugi_minus'    => (float) $summary->rugi_minus,
+                'laba_plus'     => (float) $summary->laba_plus,
             ],
+        ]);
+    }
+
+    /** Tambahkan omzet DPP, HPP/unit, laba & PENYEBAB laba minus ke 1 baris Riwayat Penjualan.
+     *  Rumus identik dgn Laba Rugi (LabaRugiLengkapController): DPP dibulatkan per baris,
+     *  HPP dibulatkan per baris, HPP ≤ 0 dianggap 0. */
+    protected function lengkapiHppJual(object $r, float $tarif): object
+    {
+        $qty  = (float) $r->qty;
+        $kena = ($r->ppn_efektif ?? null) === 'Kena PPN';
+        $tot  = $qty * (float) $r->harga - (float) ($r->diskon ?? 0);
+        $dpp  = round($kena ? $tot / (1 + $tarif) : $tot);
+        $hpp  = (float) $r->hpp_kartu > 0 ? round((float) $r->hpp_kartu) : 0.0;
+
+        $r->dpp        = $dpp;
+        $r->hpp_kartu  = $hpp;
+        $r->laba       = $dpp - $hpp;
+        $r->dpp_satuan = $qty > 0 ? round($dpp / $qty, 2) : 0;
+        $r->hpp_satuan = ($qty > 0 && $hpp > 0) ? round($hpp / $qty, 2) : 0;
+        $r->hpp_status = $hpp <= 0 ? 'nol' : ($dpp < $hpp ? 'minus' : 'ok');
+        $r->hpp_sebab  = null;
+
+        if ($r->hpp_status === 'nol') {
+            $r->hpp_sebab = empty($r->nama_barang)
+                ? 'Kode barang belum ada di Master Barang (tidak ikut Laba Rugi).'
+                : 'Barang ini belum pernah ada Pembelian sama sekali, jadi HPP = Rp 0 (laba terlihat terlalu besar).';
+        } elseif ($r->hpp_status === 'minus') {
+            $rasio = $r->dpp_satuan > 0 ? $r->hpp_satuan / $r->dpp_satuan : null;
+            $fmt = fn($n) => 'Rp ' . number_format($n, 0, ',', '.');
+            if ($rasio === null) {
+                $sebab = 'Harga jual baris ini Rp 0 (bonus/gratis) tapi barangnya ber-HPP ' . $fmt($r->hpp_satuan) . '/unit.';
+            } elseif ($rasio >= 3) {
+                $sebab = 'HPP/unit ' . $fmt($r->hpp_satuan) . ' = ' . number_format($rasio, 1, ',', '.') . '× harga jual (DPP) ' . $fmt($r->dpp_satuan)
+                       . ' → kemungkinan SATUAN beda (beli per dus/karton tapi jual per pcs) atau harga beli salah input. Cek di Kartu HPP.';
+            } elseif ($rasio >= 1.08 && $rasio <= 1.14) {
+                $sebab = 'HPP/unit ' . $fmt($r->hpp_satuan) . ' ≈ 1,11× harga jual (DPP) ' . $fmt($r->dpp_satuan)
+                       . ' → kemungkinan beda status PPN (pembelian Non-PPN/nota "TS…-" tidak di-DPP-kan, penjualan Kena PPN di-DPP-kan).';
+            } else {
+                $sebab = 'Harga jual (DPP) ' . $fmt($r->dpp_satuan) . '/unit lebih rendah dari HPP ' . $fmt($r->hpp_satuan)
+                       . '/unit → dijual di bawah harga beli (promo/harga jual master terlalu rendah/harga beli naik).';
+            }
+            if (stripos((string) ($r->hpp_ket_kartu ?? ''), 'melebihi stok pembelian') !== false) {
+                $sebab .= ' HPP-nya memakai RATA-RATA RIWAYAT pembelian karena stok hasil pembelian belum ada/habis saat dijual.';
+            }
+            $r->hpp_sebab = $sebab;
+        }
+        return $r;
+    }
+
+    // Rekap per BARANG: barang mana yang total laba-nya minus (omzet DPP < HPP) pada filter
+    // cabang/tanggal yang sama dgn Laba Rugi. Dipakai tombol "Lihat barang laba minus".
+    public function labaMinusBarang(Request $request)
+    {
+        $dpp = $this->sqlDppJual();
+        $q = DB::table('trx_jual')
+            ->join('barang', 'trx_jual.kode_barang', '=', 'barang.kode')
+            ->join('hpp_kartu as hk', function ($j) {
+                $j->on('hk.ref_id', '=', 'trx_jual.id')->where('hk.ref_tabel', '=', 'trx_jual');
+            })
+            ->where('hk.nilai_keluar', '>', 0);
+        if ($request->get('cabang')) $q->where('trx_jual.cabang', $request->get('cabang'));
+        $this->applyFilterTanggal($q, $request, 'trx_jual.tgl');
+
+        $LIMIT = 500;
+        $rows = $q->selectRaw("barang.kode, barang.nama, COUNT(*) as baris, SUM(trx_jual.qty) as qty,
+                SUM(ROUND($dpp)) as omzet, SUM(ROUND(hk.nilai_keluar)) as hpp,
+                SUM(CASE WHEN ROUND($dpp) < ROUND(hk.nilai_keluar) THEN 1 ELSE 0 END) as baris_minus,
+                SUM(CASE WHEN hk.keterangan LIKE '%melebihi stok pembelian%' THEN 1 ELSE 0 END) as baris_melebihi")
+            ->groupBy('barang.kode', 'barang.nama')
+            ->havingRaw('SUM(ROUND(hk.nilai_keluar)) > SUM(ROUND(' . $dpp . '))')
+            ->orderByRaw('(SUM(ROUND(' . $dpp . ')) - SUM(ROUND(hk.nilai_keluar))) ASC')
+            ->limit($LIMIT + 1)->get();
+
+        $terpotong = $rows->count() > $LIMIT;
+        $data = $rows->take($LIMIT)->map(function ($r) {
+            $qty = (float) $r->qty; $omzet = (float) $r->omzet; $hpp = (float) $r->hpp;
+            return [
+                'kode' => $r->kode, 'nama' => $r->nama, 'baris' => (int) $r->baris, 'qty' => $qty,
+                'omzet' => $omzet, 'hpp' => $hpp, 'laba' => $omzet - $hpp,
+                'dpp_satuan' => $qty > 0 ? round($omzet / $qty, 2) : 0,
+                'hpp_satuan' => $qty > 0 ? round($hpp / $qty, 2) : 0,
+                'rasio' => $omzet > 0 ? round($hpp / $omzet, 2) : null,
+                'baris_minus' => (int) $r->baris_minus, 'baris_melebihi' => (int) $r->baris_melebihi,
+            ];
+        })->values();
+
+        return response()->json([
+            'data' => $data, 'terpotong' => $terpotong,
+            'jml_barang' => $data->count(),
+            'total_rugi' => round($data->sum('laba')),
         ]);
     }
 

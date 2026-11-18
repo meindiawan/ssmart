@@ -186,6 +186,7 @@ Route::prefix('transaksi')->group(function () {
 
     // Penjualan
     Route::get('/jual',             [TransaksiController::class, 'getJual']);
+    Route::get('/jual/laba-minus-barang', [TransaksiController::class, 'labaMinusBarang']);
     Route::post('/jual',            [TransaksiController::class, 'storeJual']);
     Route::delete('/jual/{id}',     [TransaksiController::class, 'destroyJual']);
     Route::post('/jual/import',     [TransaksiController::class, 'importJual']);

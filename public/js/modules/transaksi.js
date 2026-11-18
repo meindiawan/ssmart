@@ -14,7 +14,7 @@
 window._trxFilter = window._trxFilter || {};
 function trxFilter(jenis) {
     if (!window._trxFilter[jenis]) {
-        window._trxFilter[jenis] = { preset: 'semua', dari: '', sampai: '', perPage: 30, search: '' };
+        window._trxFilter[jenis] = { preset: 'semua', dari: '', sampai: '', perPage: 30, search: '', laba: '' };
     }
     return window._trxFilter[jenis];
 }
@@ -40,6 +40,81 @@ window.setTrxTanggal = (jenis, elId, field, val) => {
     f[field] = val;
     f.preset = 'custom';
     renderJualBeli(jenis, elId, 1);
+};
+
+/** Filter laba Riwayat Penjualan: '' (semua) | 'minus' (HPP > omzet baris) | 'hpp0' | 'plus' */
+window.setTrxLaba = (jenis, elId, val) => {
+    trxFilter(jenis).laba = val || '';
+    renderJualBeli(jenis, elId, 1);
+};
+
+/** Lompat dari Laba Rugi ke Transaksi ▸ Penjualan dengan filter tanggal + laba (mis. 'minus'). */
+window.bukaRiwayatJualLaba = async (dari, sampai, laba) => {
+    const f = trxFilter('jual');
+    f.dari = dari || ''; f.sampai = sampai || ''; f.preset = (dari || sampai) ? 'custom' : 'semua';
+    f.laba = laba || ''; f.search = '';
+    try { closeM(); } catch (_) {}
+    await setTab('transaksi');
+    await setSubTab('tx', 'jual');
+};
+
+/** Tampilan laba 1 baris Penjualan: angka + penanda MINUS. $t = baris dari GET /transaksi/jual */
+function trxLabaHTML(t) {
+    const laba = Number(t.laba || 0);
+    if (t.hpp_status === 'nol') return `<span style="color:var(--ink3);" title="${esc(t.hpp_sebab || 'HPP belum ada')}">HPP 0</span>`;
+    const cls = laba < 0 ? 'laba-neg' : 'laba-pos';
+    return `<span class="${cls}" style="font-weight:${laba < 0 ? 700 : 400};">${laba < 0 ? '−' + R(Math.abs(laba)) : R(laba)}</span>`;
+}
+window.trxLabaHTML = trxLabaHTML;
+
+/** Rekap per BARANG yang total laba-nya minus (omzet DPP < HPP), sesuai filter cabang/tanggal. */
+window.lihatBarangLabaMinus = async (dari, sampai, cabang) => {
+    openM(`<div class="mhd"><h3>🔴 Barang dengan Laba Minus</h3><button class="mclose" onclick="closeM()">×</button></div><div class="mbd">${loadingHTML}</div>`);
+    try {
+        const cab = cabang !== undefined ? cabang : getCabang();
+        const r = await apiGet('/transaksi/jual/laba-minus-barang' + buildQuery({ cabang: cab, dari, sampai }));
+        window._lblMinus = r.data || [];
+        const cari = (k) => { const all = window._lblMinus; k = String(k || '').trim().toLowerCase();
+            return k ? all.filter(b => String(b.kode).toLowerCase().includes(k) || String(b.nama).toLowerCase().includes(k)) : all; };
+        const baris = (list) => list.length ? list.map((b, i) => {
+            const hint = b.rasio >= 3 ? '⚠ HPP ≥ 3× omzet: cek SATUAN / harga beli' : (b.rasio >= 1.08 && b.rasio <= 1.14 ? '≈ 1,11×: cek status PPN beli vs jual' : '');
+            return `<tr>
+            <td>${i + 1}</td>
+            <td style="font-family:var(--F-m);font-size:12px;">${esc(b.kode)}</td>
+            <td><span class="link-barang" onclick="lihatKartuHpp('${esc(b.kode)}')" title="Lihat Kartu HPP barang ini">${esc(b.nama)}</span>
+                ${b.baris_melebihi ? `<div style="font-size:11px;color:var(--ink3);">${b.baris_melebihi} baris memakai rata-rata riwayat pembelian (stok pembelian belum ada/habis)</div>` : ''}
+                ${hint ? `<div style="font-size:11px;color:var(--red);">${hint}</div>` : ''}</td>
+            <td class="r">${Number(b.qty).toLocaleString('id-ID')}</td>
+            <td class="r">${R(b.dpp_satuan)}</td>
+            <td class="r">${R(b.hpp_satuan)}</td>
+            <td class="r">${R(b.omzet)}</td>
+            <td class="r">${R(b.hpp)}</td>
+            <td class="r laba-neg" style="font-weight:700;">−${R(Math.abs(b.laba))}</td>
+        </tr>`; }).join('') : '<tr><td colspan="9" style="text-align:center;color:var(--ink3);">Tidak ada yang cocok.</td></tr>';
+        window._lblBaris = baris; window._lblCari = cari;
+        openM(`
+        <div class="mhd"><h3>🔴 ${r.jml_barang}${r.terpotong ? '+' : ''} Barang dengan Laba Minus</h3><button class="mclose" onclick="closeM()">×</button></div>
+        <div class="mbd">
+            <div class="note note-y" style="margin-bottom:10px;"><span>ℹ️</span>
+                <span>Barang yang <strong>HPP-nya lebih besar dari omzet (DPP)</strong> pada periode ini — urut dari rugi terbesar.
+                Total rugi barang-barang ini <strong>${R(Math.abs(r.total_rugi))}</strong>. Kolom <em>Harga Jual/unit</em> dan <em>HPP/unit</em> adalah rata-rata, keduanya DPP (tanpa PPN).
+                Klik nama barang untuk melihat Kartu HPP-nya; klik <strong>Riwayat Penjualan ▸ 🔴 Laba minus</strong> untuk melihat baris/nota-nya.
+                ${r.terpotong ? '<br>Daftar dipotong 500 barang teratas.' : ''}</span></div>
+            <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+                <input class="finput" placeholder="🔍 Cari kode atau nama barang…" style="flex:1;min-width:220px;"
+                       oninput="document.getElementById('lblBody').innerHTML = window._lblBaris(window._lblCari(this.value))">
+                <button class="btn btn-p btn-sm" onclick="bukaRiwayatJualLaba('${esc(dari || '')}','${esc(sampai || '')}','minus')">Lihat baris & nota-nya →</button>
+            </div>
+            <div style="max-height:55vh;overflow:auto;">
+                <table>
+                    <thead><tr><th>#</th><th>Kode</th><th>Nama Barang</th><th class="r">Terjual</th><th class="r">Harga Jual/unit</th><th class="r">HPP/unit</th><th class="r">Omzet</th><th class="r">HPP</th><th class="r">Laba</th></tr></thead>
+                    <tbody id="lblBody">${baris(window._lblMinus)}</tbody>
+                </table>
+            </div>
+        </div>`);
+    } catch (err) {
+        openM(`<div class="mhd"><h3>🔴 Barang dengan Laba Minus</h3><button class="mclose" onclick="closeM()">×</button></div><div class="mbd"><div class="note note-y"><span class="note-ico">⚠️</span><span>${esc(err.message)}</span></div></div>`);
+    }
 };
 
 window.setTrxPerPage = (jenis, elId, val) => {
@@ -665,7 +740,7 @@ async function renderJualBeli(jenis, elId, page = 1) {
 
     try {
         const cab = getCabang();
-        const q   = buildQuery({ cabang: cab, page, per_page: f.perPage, dari: f.dari, sampai: f.sampai, search: f.search });
+        const q   = buildQuery({ cabang: cab, page, per_page: f.perPage, dari: f.dari, sampai: f.sampai, search: f.search, laba: isJ ? f.laba : '' });
         const res  = await apiGet(`/transaksi/${jenis}` + q);
         const list = res.data || [];
         const meta = res.meta || {};
@@ -708,6 +783,39 @@ async function renderJualBeli(jenis, elId, page = 1) {
             </div>
         </div>`;
 
+        // ── Ringkasan HPP & laba (hanya Penjualan): dasar DPP yang SAMA dgn Pendapatan/HPP di Laba Rugi ──
+        const labaBarHTML = !isJ ? '' : (() => {
+            const k = summary;
+            const berHpp = Number(k.omzet_dpp || 0) - Number(k.omzet_hpp0 || 0);
+            const labaBerHpp = berHpp - Number(k.hpp_total || 0);
+            const chip = (val, label) => `<button class="btn btn-sm ${f.laba === val ? 'btn-p' : 'btn-g'}" onclick="setTrxLaba('${jenis}','${elId}','${val}')">${label}</button>`;
+            return `
+        <div class="kpi-grid" style="margin-bottom:12px;">
+            <div class="kpi green"><div class="kpi-label">Omzet (DPP)</div><div class="kpi-val">${R(k.omzet_dpp || 0)}</div><div class="kpi-sub">= Pendapatan Penjualan di Laba Rugi</div></div>
+            <div class="kpi"><div class="kpi-label">HPP Penjualan</div><div class="kpi-val">${R(k.hpp_total || 0)}</div><div class="kpi-sub">dari Kartu HPP (rata-rata beli)</div></div>
+            <div class="kpi ${Number(k.laba_kotor || 0) < 0 ? 'red' : 'green'}"><div class="kpi-label">Laba Kotor Penjualan</div><div class="kpi-val ${Number(k.laba_kotor || 0) < 0 ? 'neg' : ''}">${R(k.laba_kotor || 0)}</div><div class="kpi-sub">Omzet − HPP (termasuk yang HPP 0)</div></div>
+            <div class="kpi"><div class="kpi-label">Omzet HPP Rp 0</div><div class="kpi-val">${R(k.omzet_hpp0 || 0)}</div><div class="kpi-sub">${Number(k.jml_hpp0 || 0).toLocaleString('id-ID')} baris belum ada pembelian</div></div>
+            <div class="kpi ${Number(k.jml_minus || 0) > 0 ? 'red' : 'green'}"><div class="kpi-label">Baris Laba Minus</div><div class="kpi-val ${Number(k.jml_minus || 0) > 0 ? 'neg' : ''}">${Number(k.jml_minus || 0).toLocaleString('id-ID')} baris</div><div class="kpi-sub">rugi ${R(Math.abs(k.rugi_minus || 0))} (HPP &gt; omzet baris)</div></div>
+        </div>
+        <div class="note note-b no-print" style="margin:0 0 12px;font-size:12px;">
+            <span class="note-ico">🧮</span>
+            <span><strong>Cara cocokkan dengan Laba Rugi:</strong>
+                Omzet ${R(k.omzet_dpp || 0)} − Omzet HPP 0 ${R(k.omzet_hpp0 || 0)} = Omzet ber-HPP <strong>${R(berHpp)}</strong>;
+                dikurangi HPP <strong>${R(k.hpp_total || 0)}</strong> = <strong class="${labaBerHpp < 0 ? 'laba-neg' : 'laba-pos'}">${labaBerHpp < 0 ? '−' + R(Math.abs(labaBerHpp)) : R(labaBerHpp)}</strong>
+                (baris untung <span class="laba-pos">+${R(k.laba_plus || 0)}</span>, baris minus <span class="laba-neg">−${R(Math.abs(k.rugi_minus || 0))}</span>).
+                ${labaBerHpp < 0 ? 'Hasil <strong>minus</strong> berarti ada barang yang HPP-nya lebih besar dari harga jualnya — klik <strong>🔴 Laba minus</strong> di bawah untuk melihat baris/nota-nya.' : ''}
+            </span>
+        </div>
+        <div class="box"><div class="box-bd" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <span style="font-size:12px;color:var(--ink3);">Filter laba:</span>
+            ${chip('', 'Semua')}
+            ${chip('minus', `🔴 Laba minus (${Number(k.jml_minus || 0).toLocaleString('id-ID')})`)}
+            ${chip('hpp0', `⚪ HPP 0 (${Number(k.jml_hpp0 || 0).toLocaleString('id-ID')})`)}
+            ${chip('plus', '🟢 Laba ≥ 0')}
+            <button class="btn btn-blue btn-sm" style="margin-left:auto;" onclick="lihatBarangLabaMinus('${esc(f.dari || '')}','${esc(f.sampai || '')}')" title="Rekap per barang: barang mana yang HPP-nya lebih besar dari omzet">📊 Rekap per barang minus</button>
+        </div></div>`;
+        })();
+
         el.innerHTML = `
         ${exportBar(`tbl_${jenis}`, `data-${jenis}`, elId, isJ ? 'Data Penjualan' : 'Data Pembelian')}
         <div class="export-bar no-print" style="margin-top:-8px;">
@@ -716,6 +824,7 @@ async function renderJualBeli(jenis, elId, page = 1) {
             <button class="btn btn-g btn-sm" onclick="perbaikiNomorDobel('${jenis}','${elId}')" title="Cari nomor transaksi (no. nota) yang kepakai dobel oleh transaksi beda tanggal/cabang (biasanya dari import lama), lalu otomatis dipisah jadi nomor unik">🔧 Perbaiki Nomor Dobel</button>
         </div>
         ${filterBarHTML}
+        ${labaBarHTML}
 
         <!-- Form Input: Grid Multi-Baris (4 Tingkat Harga) -->
         <div class="box">
@@ -843,7 +952,7 @@ async function renderJualBeli(jenis, elId, page = 1) {
                     <strong>Qty</strong> = jumlah &amp; satuan ·
                     <strong>${isJ ? 'Harga Jual' : 'Harga Beli'}</strong> = harga per satuan ·
                     <strong>Diskon</strong> = potongan harga baris ini (Rp, <em>0</em> = tidak ada diskon) ·
-                    ${isJ ? '<strong>HPP</strong> = modal barang terjual baris ini (total, dari Kartu HPP; <em>0</em> = belum ada pembelian) · ' : ''}
+                    ${isJ ? '<strong>HPP</strong> = modal barang terjual baris ini (total, dari Kartu HPP; <em>0</em> = belum ada pembelian) · <strong>HPP/unit</strong> = HPP ÷ qty · <strong>Laba</strong> = omzet DPP (tanpa PPN) − HPP; baris <span class="laba-neg">merah</span> = laba MINUS (arahkan kursor ke baris untuk melihat kemungkinan penyebabnya) · ' : ''}
                     <strong>PPN</strong> = Kena PPN / Non-PPN ·
                     <strong>Subtotal</strong> = Qty × ${isJ ? 'Harga Jual' : 'Harga Beli'} − Diskon.
                 </span>
@@ -856,7 +965,7 @@ async function renderJualBeli(jenis, elId, page = 1) {
                     <thead><tr>
                         <th>Tanggal</th><th>Cabang</th><th>Barang</th>
                         <th class="r">Qty</th><th class="r">Harga</th>
-                        <th class="r">Diskon</th>${isJ ? '<th class="r">HPP</th>' : ''}${!isJ ? '<th>Supplier</th><th>Operator</th>' : ''}
+                        <th class="r">Diskon</th>${isJ ? '<th class="r">HPP</th><th class="r">HPP/unit</th><th class="r">Omzet DPP</th><th class="r">Laba</th><th>Keterangan HPP</th>' : ''}${!isJ ? '<th>Supplier</th><th>Operator</th>' : ''}
                         <th class="r">Total</th><th>Bayar</th>
                     </tr></thead>
                     <tbody>${list.map(t => {
@@ -869,7 +978,7 @@ async function renderJualBeli(jenis, elId, page = 1) {
                         <td>${Number(t.qty).toLocaleString('id-ID')} ${esc(t.satuan||'')}</td>
                         <td>${R(t.harga)}</td>
                         <td>${disc ? R(disc) : ''}</td>
-                        ${isJ ? `<td>${R(t.hpp_kartu || 0)}</td>` : ''}
+                        ${isJ ? `<td>${R(t.hpp_kartu || 0)}</td><td>${R(t.hpp_satuan || 0)}</td><td>${R(t.dpp || 0)}</td><td>${t.hpp_status === 'nol' ? 'HPP 0' : R(t.laba || 0)}</td><td>${esc(t.hpp_sebab || '')}</td>` : ''}
                         ${!isJ ? `<td>${esc(t.supplier || '')}</td><td>${esc(t.operator || '')}</td>` : ''}
                         <td>${R(tot)}</td>
                         <td>${esc(t.bayar)}</td>
@@ -894,6 +1003,14 @@ async function renderJualBeli(jenis, elId, page = 1) {
                             const preview = namaBarang.slice(0, 2).join(', ') + (namaBarang.length > 2 ? ` +${namaBarang.length - 2} lainnya` : '');
                             const first = rows[0];
                             const isPos = g.noNota.startsWith('POS-');
+                            // Ringkasan HPP/laba nota (hanya Penjualan): total HPP, laba, jumlah baris minus
+                            const nMinus = isJ ? rows.filter(t => t.hpp_status === 'minus').length : 0;
+                            const nNol   = isJ ? rows.filter(t => t.hpp_status === 'nol').length : 0;
+                            const sumHpp = isJ ? rows.reduce((a, t) => a + Number(t.hpp_kartu || 0), 0) : 0;
+                            const sumLaba = isJ ? rows.filter(t => t.hpp_status !== 'nol').reduce((a, t) => a + Number(t.laba || 0), 0) : 0;
+                            const labaNotaHTML = isJ ? ` · <span title="HPP nota ini (Kartu HPP)">HPP ${R(sumHpp)}</span> · <span class="${sumLaba < 0 ? 'laba-neg' : 'laba-pos'}" title="Laba baris yang sudah ber-HPP (omzet DPP − HPP)">Laba ${sumLaba < 0 ? '−' + R(Math.abs(sumLaba)) : R(sumLaba)}</span>`
+                                + (nMinus ? ` <span class="badge badge-warn" style="background:rgba(220,60,60,.15);color:var(--red);" title="Ada barang di nota ini yang HPP-nya lebih besar dari harga jualnya">🔴 ${nMinus} minus</span>` : '')
+                                + (nNol ? ` <span class="badge badge-noppn" title="Barang di nota ini belum ada pembeliannya (HPP 0)">⚪ ${nNol} HPP 0</span>` : '') : '';
 
                             // Nota Kasir POS: kartu biasa (bukan <details>), klik → langsung buka layar edit Kasir POS.
                             if (isPos) {
@@ -905,7 +1022,7 @@ async function renderJualBeli(jenis, elId, page = 1) {
                                         <div style="padding:11px 18px;display:flex;align-items:center;gap:12px;font-size:13px;">
                                             <span class="jr-group-arrow" style="visibility:hidden;">▸</span>
                                             <span class="jr-group-label">${fmtTgl(first.tgl)} · ${esc(first.cabang)}</span>
-                                            <span class="jr-group-meta">${preview} · <span class="badge badge-pos" onclick="event.stopPropagation();bukaBentukanRef('${esc(g.noNota)}')" title="Klik untuk lihat bentukan jurnal transaksi ini">🧾 ${esc(g.noNota)}</span> · ${rows.length} barang · ${esc(first.bayar)}</span>
+                                            <span class="jr-group-meta">${preview} · <span class="badge badge-pos" onclick="event.stopPropagation();bukaBentukanRef('${esc(g.noNota)}')" title="Klik untuk lihat bentukan jurnal transaksi ini">🧾 ${esc(g.noNota)}</span> · ${rows.length} barang · ${esc(first.bayar)}${labaNotaHTML}</span>
                                             <span class="jr-group-amt">Total ${R(total)} · ✎ Buka di Kasir POS</span>
                                         </div>
                                     </div>
@@ -926,7 +1043,7 @@ async function renderJualBeli(jenis, elId, page = 1) {
                                             : ` · <span class="badge badge-warn" style="cursor:pointer;" onclick="event.preventDefault();event.stopPropagation();bukaIsiSupplierBeli({noNota:'${esc(g.noNota)}'})" title="Nota ini belum ada suppliernya — klik untuk isi">⚠️ ✏️ Isi Supplier</span>`
                                         ) : ''}
                                         ${!isJ && first.operator ? ` · <span class="badge badge-info" title="Akun/operator yang menginput nota ini">👤 ${esc(first.operator)}</span>` : ''}
-                                        ${isJ && first.kasir ? ` · <span class="badge badge-info" title="Akun kasir yang melayani">👤 ${esc(first.kasir)}</span>${first.shift ? ` <span class="badge ${first.shift === 'Pagi' ? 'badge-ppn' : 'badge-noppn'}" title="Shift kasir">${esc(first.shift)}</span>` : ''}` : ''}
+                                        ${labaNotaHTML}${isJ && first.kasir ? ` · <span class="badge badge-info" title="Akun kasir yang melayani">👤 ${esc(first.kasir)}</span>${first.shift ? ` <span class="badge ${first.shift === 'Pagi' ? 'badge-ppn' : 'badge-noppn'}" title="Shift kasir">${esc(first.shift)}</span>` : ''}` : ''}
                                     </span>
                                     <span class="jr-group-amt">Total ${R(total)}</span>
                                 </summary>
@@ -934,14 +1051,17 @@ async function renderJualBeli(jenis, elId, page = 1) {
                                     <table>
                                         <thead style="display:table-header-group;"><tr>
                                             <th>Barang</th><th class="r">Qty</th><th class="r">${isJ ? 'Harga Jual' : 'Harga Beli'}</th>
-                                            <th class="r">Diskon</th>${isJ ? '<th class="r">HPP</th>' : ''}<th>PPN</th><th class="r">Subtotal</th>
+                                            <th class="r">Diskon</th>${isJ ? '<th class="r">Omzet DPP</th><th class="r">HPP</th><th class="r">HPP/unit</th><th class="r">Laba</th>' : ''}<th>PPN</th><th class="r">Subtotal</th>
                                         </tr></thead>
-                                        <tbody>${rows.map(t => `<tr>
+                                        <tbody>${rows.map(t => `<tr ${isJ && t.hpp_status === 'minus' ? `style="background:rgba(220,60,60,.09);" title="${esc(t.hpp_sebab || '')}"` : (isJ && t.hpp_status === 'nol' ? `title="${esc(t.hpp_sebab || '')}"` : '')}>
                                             <td>${t.tidak_dikenal ? `⚠️ ${esc(t.kode_asli || t.kode_barang)}` : `<span class="link-barang" onclick="event.stopPropagation();lihatKartuHpp('${esc(t.kode_barang)}')" title="Klik untuk lihat riwayat masuk/keluar & HPP rata-rata barang ini">${esc(t.nama_barang || t.kode_barang)}</span>`}</td>
                                             <td class="r">${Number(t.qty).toLocaleString('id-ID')} ${esc(t.satuan||'')}</td>
                                             <td class="r">${R(t.harga)}</td>
                                             <td class="r">${t.diskon ? R(t.diskon) : '0'}</td>
-                                            ${isJ ? `<td class="r" title="HPP total baris ini (Kartu HPP)" ${Number(t.hpp_kartu || 0) > 0 ? '' : 'style="color:var(--red);"'}>${R(t.hpp_kartu || 0)}</td>` : ''}
+                                            ${isJ ? `<td class="r" title="Omzet baris ini tanpa PPN (dasar Pendapatan di Laba Rugi)">${R(t.dpp || 0)}</td>
+                                            <td class="r" title="HPP total baris ini (Kartu HPP)" ${Number(t.hpp_kartu || 0) > 0 ? '' : 'style="color:var(--red);"'}>${R(t.hpp_kartu || 0)}</td>
+                                            <td class="r" title="HPP per satuan (HPP ÷ qty)">${t.hpp_status === 'nol' ? '–' : R(t.hpp_satuan || 0)}${t.hpp_status === 'minus' ? `<div style="font-size:10px;color:var(--ink3);">jual ${R(t.dpp_satuan || 0)}</div>` : ''}</td>
+                                            <td class="r" title="${esc(t.hpp_sebab || 'Omzet DPP − HPP')}">${trxLabaHTML(t)}${t.hpp_status === 'minus' ? ' 🔴' : ''}</td>` : ''}
                                             <td><span class="badge ${t.ppn_efektif === 'Kena PPN' ? 'badge-ppn' : 'badge-noppn'}" title="${t.ppn ? 'Di-override khusus transaksi ini' : 'Ikut status di Master Barang'}">${esc(t.ppn_efektif || '–')}${t.ppn ? ' ✎' : ''}</span></td>
                                             <td class="r">${R(Number(t.qty) * Number(t.harga) - Number(t.diskon || 0))}</td>
                                         </tr>`).join('')}</tbody>
@@ -968,7 +1088,7 @@ async function renderJualBeli(jenis, elId, page = 1) {
                                     ${t.tidak_dikenal
                                         ? `⚠️ Kode tidak dikenal: ${esc(t.kode_asli || t.kode_barang)}`
                                         : `<span class="link-barang" onclick="event.stopPropagation();lihatKartuHpp('${esc(t.kode_barang)}')" title="Klik untuk lihat riwayat masuk/keluar & HPP rata-rata barang ini">${esc(t.nama_barang || t.kode_barang)}</span>`}
-                                    · ${Number(t.qty).toLocaleString('id-ID')} ${esc(t.satuan||'')} × ${R(t.harga)}${disc ? ` − diskon ${R(disc)}` : ''}${isJ ? ` · HPP ${R(t.hpp_kartu || 0)}` : ''}
+                                    · ${Number(t.qty).toLocaleString('id-ID')} ${esc(t.satuan||'')} × ${R(t.harga)}${disc ? ` − diskon ${R(disc)}` : ''}${isJ ? ` · HPP ${R(t.hpp_kartu || 0)} · Laba ${trxLabaHTML(t)}${t.hpp_status === 'minus' ? ' 🔴' : ''}` : ''}
                                     ${!isJ ? (t.supplier ? ` · ${esc(t.supplier)}` : ` · <span class="badge badge-warn" style="cursor:pointer;" onclick="bukaIsiSupplierBeli({ids:[${t.id}]})" title="Belum ada supplier — klik untuk isi">⚠️ ✏️ Isi Supplier</span>`) : ''}${!isJ && t.operator ? ` · <span class="badge badge-info" title="Akun/operator yang menginput">👤 ${esc(t.operator)}</span>` : ''} · ${esc(t.bayar)}
                                 </span>
                                 <span class="jr-group-amt">Total ${R(tot)}</span>
