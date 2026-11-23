@@ -21,8 +21,3 @@ Preview menampilkan kolom PPN per baris + ringkasan "N Kena PPN · N Non-PPN · 
 - File tanpa KODE_BARANG (hanya KODE_BARCODE) kini dikenali: barcode dipakai sebagai kode barang.
 - Baris tanpa kode/barcode dilewati (dilaporkan di preview); kode kembar di file diberi peringatan.
 - Template Excel ikut kolom PPN.
-
-## Export Excel Master Barang = SEMUA barang
-Tombol "📊 Export Excel (Semua)" kini mengambil seluruh barang dari server (bukan hanya 30/50 baris halaman
-yang tampil), mengikuti filter pencarian & cabang yang aktif. Kolomnya sama dengan format Import (ada PPN YA/TIDAK),
-jadi file bisa diedit lalu diimport lagi. Kolom HPP & STOK_TOTAL hanya info (diabaikan saat import).
