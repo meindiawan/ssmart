@@ -15,6 +15,15 @@ use Illuminate\Validation\Rule;
 //   Dibayar = jumlah catatan di tabel bayar_hutang untuk no_nota yang sama.
 //   Status  = Belum (0 dibayar) · Sebagian · Lunas (sisa ≤ Rp1).
 // Setiap pembayaran otomatis masuk Jurnal: Dr 2101 Hutang Usaha / Cr Kas-Bank.
+//
+// SALDO DIPISAH KENA PPN vs NON-PPN (per baris barang, rumus SAMA dgn Jurnal Pembelian):
+//   status baris = COALESCE(NULLIF(trx_beli.ppn,''), barang.ppn)
+//   → override per baris (mis. barang berPPN dibeli di toko tanpa PPN = "Non-PPN") menang
+//      atas Master Barang.
+//   Kena PPN : bruto, DPP, PPN Masukan (= bruto − bruto/(1+tarif))
+//   Non-PPN  : bruto saja
+//   Pembayaran dialokasikan proporsional ke sisa porsi PPN & Non-PPN (kolom porsi_ppn /
+//   porsi_non_ppn di bayar_hutang; pembayaran lama yg kolomnya NULL dibagi sesuai rasio nota).
 // ═══════════════════════════════════════════════════════════════════════
 class HutangController extends Controller
 {
@@ -31,33 +40,64 @@ class HutangController extends Controller
         return ($r->no_nota !== null && $r->no_nota !== '') ? $r->no_nota : 'PB-' . $r->id;
     }
 
-    /** Peta no_nota → total dibayar. */
+    private static function tarif(): float
+    {
+        $st = DB::table('settings')->where('key', 'tarif_ppn')->first();
+        return $st ? (float) $st->value / 100 : 0.11;
+    }
+
+    private static function adaPorsi(): bool
+    {
+        return self::ada() && Schema::hasColumn('bayar_hutang', 'porsi_ppn');
+    }
+
+    /** Peta no_nota → total dibayar (+ rincian porsi PPN / Non-PPN; 'legacy' = nominal tanpa alokasi). */
     private static function petaDibayar(): array
     {
         if (!self::ada()) return [];
-        return DB::table('bayar_hutang')
-            ->selectRaw('no_nota, SUM(nominal) as dibayar, MAX(tgl) as terakhir, COUNT(*) as n')
+        $porsi = self::adaPorsi();
+        $sel = 'no_nota, SUM(nominal) as dibayar, MAX(tgl) as terakhir, COUNT(*) as n'
+            . ($porsi
+                ? ', SUM(CASE WHEN porsi_ppn IS NULL THEN 0 ELSE porsi_ppn END) as p_ppn'
+                  . ', SUM(CASE WHEN porsi_ppn IS NULL THEN 0 ELSE COALESCE(porsi_non_ppn,0) END) as p_non'
+                  . ', SUM(CASE WHEN porsi_ppn IS NULL THEN nominal ELSE 0 END) as legacy'
+                : ', 0 as p_ppn, 0 as p_non, SUM(nominal) as legacy');
+        return DB::table('bayar_hutang')->selectRaw($sel)
             ->groupBy('no_nota')->get()->keyBy('no_nota')->map(fn($r) => [
                 'dibayar' => (float) $r->dibayar, 'terakhir' => $r->terakhir, 'n' => (int) $r->n,
+                'ppn' => (float) $r->p_ppn, 'non' => (float) $r->p_non, 'legacy' => (float) $r->legacy,
             ])->all();
+    }
+
+    /** Bagi nominal pembayaran ke porsi Kena PPN & Non-PPN, proporsional terhadap SISA tiap porsi. */
+    private static function alokasi(array $n, float $nominal): array
+    {
+        $den = $n['sisa_ppn'] + $n['sisa_non'];
+        if ($den <= 0) return [0.0, round($nominal, 2)];
+        $p = min(round($nominal * $n['sisa_ppn'] / $den, 2), $n['sisa_ppn'], $nominal);
+        return [$p, round($nominal - $p, 2)];
     }
 
     /** Semua nota Kredit beserta total, dibayar, sisa, status. */
     private function rekap(array $f = []): array
     {
-        $q = DB::table('trx_beli')->where('bayar', 'Kredit');
-        if (!empty($f['cabang'])) $q->where('cabang', $f['cabang']);
-        if (!empty($f['dari']))   $q->where('tgl', '>=', $f['dari']);
-        if (!empty($f['sampai'])) $q->where('tgl', '<=', $f['sampai']);
+        $q = DB::table('trx_beli')->leftJoin('barang', 'trx_beli.kode_barang', '=', 'barang.kode')
+            ->where('trx_beli.bayar', 'Kredit');
+        if (!empty($f['cabang'])) $q->where('trx_beli.cabang', $f['cabang']);
+        if (!empty($f['dari']))   $q->where('trx_beli.tgl', '>=', $f['dari']);
+        if (!empty($f['sampai'])) $q->where('trx_beli.tgl', '<=', $f['sampai']);
         if (!empty($f['supplier'])) {
             if (mb_strtolower($f['supplier']) === 'umum') {
-                $q->where(fn($w) => $w->whereNull('supplier')->orWhere('supplier', '')->orWhere('supplier', $f['supplier']));
+                $q->where(fn($w) => $w->whereNull('trx_beli.supplier')->orWhere('trx_beli.supplier', '')->orWhere('trx_beli.supplier', $f['supplier']));
             } else {
-                $q->where('supplier', $f['supplier']);
+                $q->where('trx_beli.supplier', $f['supplier']);
             }
         }
-        $rows = $q->select('id', 'no_nota', 'tgl', 'cabang', 'supplier', 'qty', 'harga', 'diskon', 'operator')
-            ->orderBy('id')->get();
+        $rows = $q->select('trx_beli.id', 'trx_beli.no_nota', 'trx_beli.tgl', 'trx_beli.cabang', 'trx_beli.supplier',
+                'trx_beli.qty', 'trx_beli.harga', 'trx_beli.diskon', 'trx_beli.operator')
+            ->selectRaw("COALESCE(NULLIF(trx_beli.ppn, ''), barang.ppn) as ppn_efektif")
+            ->orderBy('trx_beli.id')->get();
+        $tarif = self::tarif();
 
         $bayar = self::petaDibayar();
         $hariIni = strtotime(date('Y-m-d'));
@@ -68,10 +108,14 @@ class HutangController extends Controller
                 $nota[$k] = [
                     'no_nota' => $k, 'tgl' => $r->tgl, 'cabang' => $r->cabang,
                     'supplier' => $r->supplier ?: null, 'operator' => $r->operator ?? null,
-                    'total' => 0.0, 'jml_barang' => 0,
+                    'total' => 0.0, 'total_ppn' => 0.0, 'total_non' => 0.0, 'ppn_masukan' => 0.0, 'jml_barang' => 0,
                 ];
             }
-            $nota[$k]['total'] += (float) $r->qty * (float) $r->harga - (float) ($r->diskon ?? 0);
+            $tot  = (float) $r->qty * (float) $r->harga - (float) ($r->diskon ?? 0);
+            $kena = ($r->ppn_efektif ?? null) === 'Kena PPN';
+            $nota[$k]['total'] += $tot;
+            if ($kena) { $nota[$k]['total_ppn'] += $tot; $nota[$k]['ppn_masukan'] += $tot - $tot / (1 + $tarif); }
+            else       { $nota[$k]['total_non'] += $tot; }
             $nota[$k]['jml_barang']++;
             if (!$nota[$k]['supplier'] && $r->supplier) $nota[$k]['supplier'] = $r->supplier;
             if ($r->tgl < $nota[$k]['tgl']) $nota[$k]['tgl'] = $r->tgl;
@@ -80,14 +124,25 @@ class HutangController extends Controller
         $cari = mb_strtolower(trim($f['search'] ?? ''));
         $hasil = [];
         foreach ($nota as $k => $n) {
-            $n['total']   = round($n['total']);
+            $n['total_ppn']    = round($n['total_ppn']);
+            $n['total']        = round($n['total']);
+            $n['total_non']    = $n['total'] - $n['total_ppn']; // jumlah 2 porsi selalu = total
+            $n['ppn_masukan']  = round($n['ppn_masukan']);
+            $n['dpp_ppn']      = $n['total_ppn'] - $n['ppn_masukan'];
             $b            = $bayar[$k] ?? null;
             $n['dibayar'] = $b ? round($b['dibayar']) : 0.0;
-            $n['sisa']    = max(0.0, $n['total'] - $n['dibayar']);
+            // Pembayaran lama (tanpa alokasi) dibagi sesuai rasio porsi nota.
+            $rasio = $n['total'] > 0 ? $n['total_ppn'] / $n['total'] : 0.0;
+            $n['dibayar_ppn'] = $b ? round($b['ppn'] + $b['legacy'] * $rasio) : 0.0;
+            $n['dibayar_non'] = $n['dibayar'] - $n['dibayar_ppn'];
+            $n['sisa']        = max(0.0, $n['total'] - $n['dibayar']);
+            $n['sisa_ppn']    = max(0.0, $n['total_ppn'] - $n['dibayar_ppn']);
+            $n['sisa_non']    = max(0.0, $n['total_non'] - $n['dibayar_non']);
             $n['terakhir_bayar'] = $b['terakhir'] ?? null;
             $n['jml_bayar']      = $b['n'] ?? 0;
             $n['status'] = $n['sisa'] <= self::TOLERANSI ? 'Lunas' : ($n['dibayar'] > 0 ? 'Sebagian' : 'Belum');
-            if ($n['status'] === 'Lunas') $n['sisa'] = 0.0;
+            if ($n['status'] === 'Lunas') { $n['sisa'] = 0.0; $n['sisa_ppn'] = 0.0; $n['sisa_non'] = 0.0; }
+            $n['ppn_masukan_sisa'] = $n['total_ppn'] > 0 ? round($n['ppn_masukan'] * $n['sisa_ppn'] / $n['total_ppn']) : 0.0;
             $n['umur'] = (int) max(0, floor(($hariIni - strtotime($n['tgl'])) / 86400));
             if ($cari !== '' && !str_contains(mb_strtolower($k . ' ' . ($n['supplier'] ?? '') . ' ' . $n['cabang']), $cari)) continue;
             $hasil[$k] = $n;
@@ -100,12 +155,21 @@ class HutangController extends Controller
         $status = $request->get('status', 'aktif'); // aktif (belum+sebagian) | belum | sebagian | lunas | semua
         $semua  = $this->rekap($request->only(['cabang', 'supplier', 'dari', 'sampai', 'search']));
 
-        $ringkas = ['total' => 0.0, 'dibayar' => 0.0, 'sisa' => 0.0, 'nota_belum' => 0, 'nota_sebagian' => 0, 'nota_lunas' => 0];
+        $ringkas = ['total' => 0.0, 'dibayar' => 0.0, 'sisa' => 0.0, 'nota_belum' => 0, 'nota_sebagian' => 0, 'nota_lunas' => 0,
+            'ppn'     => ['total' => 0.0, 'dibayar' => 0.0, 'sisa' => 0.0, 'ppn_masukan_sisa' => 0.0],
+            'non_ppn' => ['total' => 0.0, 'dibayar' => 0.0, 'sisa' => 0.0]];
         foreach ($semua as $n) {
             $ringkas['total']   += $n['total'];
             $ringkas['dibayar'] += min($n['dibayar'], $n['total']);
             $ringkas['sisa']    += $n['sisa'];
             $ringkas['nota_' . strtolower($n['status'])]++;
+            $ringkas['ppn']['total']            += $n['total_ppn'];
+            $ringkas['ppn']['dibayar']          += min($n['dibayar_ppn'], $n['total_ppn']);
+            $ringkas['ppn']['sisa']             += $n['sisa_ppn'];
+            $ringkas['ppn']['ppn_masukan_sisa'] += $n['ppn_masukan_sisa'];
+            $ringkas['non_ppn']['total']        += $n['total_non'];
+            $ringkas['non_ppn']['dibayar']      += min($n['dibayar_non'], $n['total_non']);
+            $ringkas['non_ppn']['sisa']         += $n['sisa_non'];
         }
 
         $list = array_values(array_filter($semua, function ($n) use ($status) {
@@ -144,15 +208,26 @@ class HutangController extends Controller
         } else {
             $q->where('trx_beli.no_nota', $no);
         }
-        $items = $q->select('trx_beli.*', 'barang.nama as nama_barang')->orderBy('trx_beli.id')->get();
+        $items = $q->select('trx_beli.*', 'barang.nama as nama_barang')
+            ->selectRaw("COALESCE(NULLIF(trx_beli.ppn, ''), barang.ppn) as ppn_efektif")
+            ->orderBy('trx_beli.id')->get();
+        $tarif = self::tarif();
         if ($items->isEmpty()) return response()->json(['message' => 'Nota tidak ditemukan'], 404);
 
-        $barang = $items->map(fn($r) => [
-            'nama'   => $r->tidak_dikenal ? ($r->kode_asli ?: $r->kode_barang) : ($r->nama_barang ?? $r->kode_barang),
-            'qty'    => (float) $r->qty, 'satuan' => $r->satuan, 'harga' => (float) $r->harga,
-            'diskon' => (float) ($r->diskon ?? 0),
-            'subtotal' => (float) $r->qty * (float) $r->harga - (float) ($r->diskon ?? 0),
-        ])->all();
+        $barang = $items->map(function ($r) use ($tarif) {
+            $sub  = (float) $r->qty * (float) $r->harga - (float) ($r->diskon ?? 0);
+            $kena = ($r->ppn_efektif ?? null) === 'Kena PPN';
+            return [
+                'nama'   => $r->tidak_dikenal ? ($r->kode_asli ?: $r->kode_barang) : ($r->nama_barang ?? $r->kode_barang),
+                'qty'    => (float) $r->qty, 'satuan' => $r->satuan, 'harga' => (float) $r->harga,
+                'diskon' => (float) ($r->diskon ?? 0),
+                'subtotal' => $sub,
+                'ppn'      => $kena ? 'Kena PPN' : 'Non-PPN',
+                'override' => ($r->ppn ?? '') !== '' && $r->ppn !== null, // di-override khusus baris ini
+                'dpp'      => round($kena ? $sub / (1 + $tarif) : $sub),
+                'ppn_nilai'=> round($kena ? $sub - $sub / (1 + $tarif) : 0),
+            ];
+        })->all();
 
         $pembayaran = self::ada()
             ? DB::table('bayar_hutang')->where('no_nota', $no)->orderBy('tgl')->orderBy('id')->get()
@@ -169,11 +244,15 @@ class HutangController extends Controller
     private function simpanBayar(string $noNota, array $nota, string $tgl, float $nominal, string $kodeKas, ?string $ket): object
     {
         $noBayar = 'BH-' . date('ymd', strtotime($tgl)) . '-' . strtoupper(Str::random(4));
-        $id = DB::table('bayar_hutang')->insertGetId([
+        $row = [
             'no_bayar' => $noBayar, 'no_nota' => $noNota, 'tgl' => $tgl, 'cabang' => $nota['cabang'],
             'nominal' => $nominal, 'kode_kas' => $kodeKas, 'keterangan' => $ket,
             'created_at' => now(), 'updated_at' => now(),
-        ]);
+        ];
+        if (self::adaPorsi()) {
+            [$row['porsi_ppn'], $row['porsi_non_ppn']] = self::alokasi($nota, $nominal);
+        }
+        $id = DB::table('bayar_hutang')->insertGetId($row);
         return DB::table('bayar_hutang')->find($id);
     }
 

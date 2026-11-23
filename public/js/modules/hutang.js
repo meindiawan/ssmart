@@ -15,6 +15,8 @@ const _hpStatusBadge = s => ({
     Lunas    : '<span class="badge badge-ppn">✅ Lunas</span>',
 }[s] || esc(s));
 
+const _hpPpnBadge = (st, ov) => `<span class="badge ${st === 'Kena PPN' ? 'badge-ppn' : 'badge-noppn'}" title="${ov ? 'Di-override khusus transaksi ini' : 'Ikut status di Master Barang'}">${esc(st)}${ov ? ' ✎' : ''}</span>`;
+
 async function renderHutang() {
     const el = document.getElementById('hutang-list');
     const f  = window._hutangFilter;
@@ -64,6 +66,7 @@ async function muatHutang() {
         const res = await apiGet('/hutang' + buildQuery(f));
         const list = res.data || [];
         const rk = res.ringkasan || {};
+        const kp = rk.ppn || {}, np = rk.non_ppn || {};
         window._hutangData = list;
 
         ring.innerHTML = `<div class="box-bd" style="display:flex;gap:28px;flex-wrap:wrap;">
@@ -73,6 +76,25 @@ async function muatHutang() {
             <div><div class="meta">Belum bayar</div><div style="font-family:var(--F-m);font-size:20px;font-weight:600;">${rk.nota_belum || 0} nota</div></div>
             <div><div class="meta">Sebagian</div><div style="font-family:var(--F-m);font-size:20px;font-weight:600;">${rk.nota_sebagian || 0} nota</div></div>
             <div><div class="meta">Lunas</div><div style="font-family:var(--F-m);font-size:20px;font-weight:600;">${rk.nota_lunas || 0} nota</div></div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;padding:0 14px 14px;">
+            <div style="border:1px solid var(--line,#e3e6ea);border-radius:10px;padding:10px 14px;">
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;"><span class="badge badge-ppn">Kena PPN</span><span class="meta">barang berPPN</span></div>
+                <div style="display:flex;gap:18px;flex-wrap:wrap;">
+                    <div><div class="meta">Total</div><div style="font-family:var(--F-m);font-weight:600;">${R(kp.total || 0)}</div></div>
+                    <div><div class="meta">Dibayar</div><div class="laba-pos" style="font-weight:600;">${R(kp.dibayar || 0)}</div></div>
+                    <div><div class="meta">Sisa hutang</div><div class="laba-neg" style="font-weight:700;">${R(kp.sisa || 0)}</div></div>
+                </div>
+                <div class="meta" style="margin-top:6px;">di dalam sisa ini ada PPN Masukan ± <strong>${R(kp.ppn_masukan_sisa || 0)}</strong> · DPP ± ${R((kp.sisa || 0) - (kp.ppn_masukan_sisa || 0))}</div>
+            </div>
+            <div style="border:1px solid var(--line,#e3e6ea);border-radius:10px;padding:10px 14px;">
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;"><span class="badge badge-noppn">Non-PPN</span><span class="meta">tanpa PPN (mis. rokok / beli di toko non-PKP)</span></div>
+                <div style="display:flex;gap:18px;flex-wrap:wrap;">
+                    <div><div class="meta">Total</div><div style="font-family:var(--F-m);font-weight:600;">${R(np.total || 0)}</div></div>
+                    <div><div class="meta">Dibayar</div><div class="laba-pos" style="font-weight:600;">${R(np.dibayar || 0)}</div></div>
+                    <div><div class="meta">Sisa hutang</div><div class="laba-neg" style="font-weight:700;">${R(np.sisa || 0)}</div></div>
+                </div>
+            </div>
         </div>
         ${res.migrasi_ada === false ? `<div class="note note-y" style="margin:0 14px 14px;"><span>⚠️ Tabel pelunasan belum ada. Jalankan <code>php artisan migrate</code> di server, lalu muat ulang halaman ini.</span></div>` : ''}`;
 
@@ -86,7 +108,7 @@ async function muatHutang() {
             <thead><tr>
                 <th style="width:28px;"><input type="checkbox" id="hpChkAll" onclick="hutangPilihSemua(this.checked)" title="Pilih semua nota yang belum lunas di daftar ini"></th>
                 <th>No. Nota</th><th>Tgl Nota</th><th class="r">Umur</th><th>Supplier</th><th>Cabang</th>
-                <th class="r">Total</th><th class="r">Dibayar</th><th class="r">Sisa</th><th>Status</th><th></th>
+                <th class="r">Total</th><th class="r">Dibayar</th><th class="r">Sisa</th><th class="r" title="Sisa hutang untuk barang Kena PPN (sudah termasuk PPN Masukan)">Sisa Kena PPN</th><th class="r" title="Sisa hutang untuk barang Non-PPN">Sisa Non-PPN</th><th>Status</th><th></th>
             </tr></thead>
             <tbody>${list.map((n, i) => `
             <tr class="row-click" onclick="hutangDetail(${i})" title="Klik untuk lihat rincian barang & riwayat pembayaran">
@@ -99,6 +121,8 @@ async function muatHutang() {
                 <td class="r">${R(n.total)}</td>
                 <td class="r laba-pos">${n.dibayar ? R(n.dibayar) : '–'}</td>
                 <td class="r ${n.sisa ? 'laba-neg' : ''}" style="font-weight:600;">${n.sisa ? R(n.sisa) : '–'}</td>
+                <td class="r" style="font-size:12px;">${n.sisa_ppn ? R(n.sisa_ppn) : '–'}</td>
+                <td class="r" style="font-size:12px;">${n.sisa_non ? R(n.sisa_non) : '–'}</td>
                 <td>${_hpStatusBadge(n.status)}</td>
                 <td onclick="event.stopPropagation()" style="white-space:nowrap;">
                     ${n.status !== 'Lunas' ? `<button class="btn btn-p btn-sm" onclick="hutangBayar(${i})">💳 Bayar</button>` : ''}
@@ -170,6 +194,7 @@ window.hutangBayar = i => {
                 <span class="fhint"><a href="#" onclick="document.getElementById('hbNom').value=${n.sisa};return false;">Isi sisa penuh (lunas)</a> · kurangi angkanya untuk bayar sebagian / cicil</span></div>
             <div class="fgroup"><label class="flabel">Keterangan</label><input class="finput" id="hbKet" placeholder="mis. transfer BCA / bayar ke sales"></div>
         </div>
+        <div class="meta" style="margin-bottom:8px;">Sisa: <span class="badge badge-ppn">Kena PPN</span> <strong>${R(n.sisa_ppn || 0)}</strong> &nbsp;·&nbsp; <span class="badge badge-noppn">Non-PPN</span> <strong>${R(n.sisa_non || 0)}</strong> — cicilan dibagi proporsional ke kedua porsi ini.</div>
         <div class="note note-b" style="margin-top:10px;"><span>ℹ️ Otomatis dijurnal: Dr Hutang Usaha, Cr Kas/Bank yang dipilih (cabang ${esc(n.cabang)}).</span></div>
     </div>
     <div class="mft">
@@ -256,13 +281,19 @@ window.hutangDetail = async i => {
         </div>
         <h4 style="margin:10px 0 6px;">Barang (${(res.barang || []).length})</h4>
         <div class="tscroll" style="max-height:200px;overflow-y:auto;"><table>
-            <thead><tr><th>Barang</th><th class="r">Qty</th><th class="r">Harga</th><th class="r">Subtotal</th></tr></thead>
-            <tbody>${(res.barang || []).map(b => `<tr><td>${esc(b.nama)}</td><td class="r">${b.qty} ${esc(b.satuan || '')}</td><td class="r">${R(b.harga)}</td><td class="r">${R(b.subtotal)}</td></tr>`).join('')}
-            <tr><td colspan="3"><strong>Total</strong></td><td class="r"><strong>${R(n.total)}</strong></td></tr></tbody></table></div>
+            <thead><tr><th>Barang</th><th>PPN</th><th class="r">Qty</th><th class="r">Harga</th><th class="r">Subtotal</th></tr></thead>
+            <tbody>${(res.barang || []).map(b => `<tr><td>${esc(b.nama)}</td><td>${_hpPpnBadge(b.ppn, b.override)}</td><td class="r">${b.qty} ${esc(b.satuan || '')}</td><td class="r">${R(b.harga)}</td><td class="r">${R(b.subtotal)}</td></tr>`).join('')}
+            <tr><td colspan="4"><strong>Total</strong></td><td class="r"><strong>${R(n.total)}</strong></td></tr></tbody></table></div>
+        <h4 style="margin:14px 0 6px;">Rincian PPN / Non-PPN</h4>
+        <table><thead><tr><th></th><th class="r">Total</th><th class="r">Dibayar</th><th class="r">Sisa</th></tr></thead><tbody>
+            <tr><td><span class="badge badge-ppn">Kena PPN</span> <span class="meta">(DPP ${R(n.dpp_ppn)} + PPN Masukan ${R(n.ppn_masukan)})</span></td><td class="r">${R(n.total_ppn)}</td><td class="r">${R(n.dibayar_ppn)}</td><td class="r ${n.sisa_ppn ? 'laba-neg' : ''}">${R(n.sisa_ppn)}</td></tr>
+            <tr><td><span class="badge badge-noppn">Non-PPN</span></td><td class="r">${R(n.total_non)}</td><td class="r">${R(n.dibayar_non)}</td><td class="r ${n.sisa_non ? 'laba-neg' : ''}">${R(n.sisa_non)}</td></tr>
+        </tbody></table>
+        <div class="meta" style="margin-top:6px;">Salah status PPN di satu baris (mis. barang berPPN dibeli di toko tanpa PPN)? Ubah di Transaksi ▸ Pembelian (kolom PPN baris tsb → Non-PPN); saldo di sini ikut berubah otomatis.</div>
         <h4 style="margin:14px 0 6px;">Riwayat Pembayaran</h4>
-        ${bayar.length ? `<table><thead><tr><th>Tgl</th><th>No. Bayar</th><th>Kas</th><th>Keterangan</th><th class="r">Nominal</th><th></th></tr></thead>
+        ${bayar.length ? `<table><thead><tr><th>Tgl</th><th>No. Bayar</th><th>Kas</th><th>Keterangan</th><th class="r">Nominal</th><th class="r">Porsi PPN</th><th class="r">Porsi Non-PPN</th><th></th></tr></thead>
             <tbody>${bayar.map(b => `<tr><td>${fmtTgl(b.tgl)}</td><td style="font-family:var(--F-m);font-size:11px;">${esc(b.no_bayar)}</td><td>${esc(b.kode_kas)}</td><td>${esc(b.keterangan || '')}</td>
-                <td class="r">${R(b.nominal)}</td><td><button class="row-del" title="Batalkan pembayaran ini" onclick="hutangBatalBayar(${b.id})">✕</button></td></tr>`).join('')}</tbody></table>`
+                <td class="r">${R(b.nominal)}</td><td class="r" style="font-size:12px;">${b.porsi_ppn != null ? R(b.porsi_ppn) : '<span class="meta" title="Pembayaran lama — dibagi proporsional otomatis">auto</span>'}</td><td class="r" style="font-size:12px;">${b.porsi_non_ppn != null ? R(b.porsi_non_ppn) : '<span class="meta">auto</span>'}</td><td><button class="row-del" title="Batalkan pembayaran ini" onclick="hutangBatalBayar(${b.id})">✕</button></td></tr>`).join('')}</tbody></table>`
             : '<div style="color:var(--ink3);font-size:13px;">Belum ada pembayaran.</div>'}`;
     } catch (err) {
         document.querySelector('.mbd').innerHTML = `<div class="note note-y"><span>⚠️ ${esc(err.message)}</span></div>`;
