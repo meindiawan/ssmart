@@ -470,6 +470,15 @@ class MasterController extends Controller
         ]);
     }
 
+    /** 'YA'/'Kena PPN'/… → 'Kena PPN'; 'TIDAK'/'Non-PPN'/… → 'Non-PPN'; selain itu null. */
+    private function normalisasiPpn($raw): ?string
+    {
+        $v = strtolower(preg_replace('/[^a-z0-9]/i', '', (string) $raw));
+        if (in_array($v, ['ya', 'y', 'yes', 'kenappn', 'ppn', '1', 'true'], true)) return 'Kena PPN';
+        if (in_array($v, ['tidak', 'tdk', 't', 'no', 'n', 'nonppn', 'tanpappn', '0', 'false'], true)) return 'Non-PPN';
+        return null;
+    }
+
     public function importBarang(Request $request)
     {
         $request->validate([
@@ -520,13 +529,13 @@ class MasterController extends Controller
             // `=== ''` (bukan `!$kode`): kode "0" adalah kode barang yang sah, jangan ikut terbuang.
             if ($kode === '') { $skipped++; continue; }
 
-            // Mapping kolom Excel Toko Sumini ke kolom DB
-            $ppnVal = 'Kena PPN';
-            // Kalau KATEGORI = ROKOK atau Sub rokok → Non-PPN, bisa dikustomisasi
-            // Default tetap Kena PPN kecuali dikirim eksplisit
-            if (isset($item['ppn'])) {
-                $ppnVal = in_array($item['ppn'], ['Kena PPN','Non-PPN']) ? $item['ppn'] : 'Kena PPN';
-            }
+            // Status PPN dari kolom PPN di Excel (YA / TIDAK).
+            //  - Diisi jelas  → dipakai apa adanya (Kena PPN / Non-PPN).
+            //  - Kosong       → barang LAMA: status PPN tidak diubah; barang BARU: default
+            //                   Kena PPN, kecuali kategori ROKOK = Non-PPN.
+            $ppnFile = $this->normalisasiPpn($item['ppn'] ?? $item['PPN'] ?? null);
+            $kategoriItem = strtoupper(trim($item['kategori'] ?? $item['KATEGORI'] ?? ''));
+            $ppnVal = $ppnFile ?? ($kategoriItem === 'ROKOK' ? 'Non-PPN' : 'Kena PPN');
 
             $data = [
                 'nama'         => trim($item['nama'] ?? ''),
@@ -565,6 +574,8 @@ class MasterController extends Controller
                 $existing = DB::table('barang')->where('kode', $kode)->first();
                 if ($existing) {
                     $upd = $data;
+                    // PPN kosong di file → jangan menimpa status PPN barang yang sudah ada.
+                    if ($ppnFile === null) unset($upd['ppn']);
 
                     // Import TIDAK PERNAH menyentuh HPP/Harga Modal barang yang sudah ada
                     // (nilainya dikelola otomatis dari Pembelian lewat Kartu HPP).

@@ -949,7 +949,7 @@ window.bukaImportBarang = () => {
     <div class="mhd"><h3>📥 Import Barang dari Excel</h3><button class="mclose" onclick="closeM()">×</button></div>
     <div class="mbd">
         <div class="note note-b" style="margin-bottom:12px;"><span class="note-ico">ℹ️</span>
-            <span>Mendukung file Excel (.xlsx/.xls) dengan kolom: <strong>KODE_BARANG, KODE_BARCODE, NAMA, KATEGORI, SUB_KATEGORI, SUPPLIER, HARGA_TOKO_1 (HGA TOKO), HARGA_PARTAI_1 (HRG PARTAI), HARGA_CABANG_1 (HRG CABANG), SATUAN_1, SATUAN_2, STOK_MIN, STOK_MAX, TOKO, GUDANG</strong>.<br>
+            <span>Mendukung file Excel (.xlsx/.xls) dengan kolom: <strong>KODE_BARANG (boleh kosong → pakai KODE_BARCODE), KODE_BARCODE, NAMA, KATEGORI, PPN (YA/TIDAK), SUB_KATEGORI, SUPPLIER, HARGA_TOKO_1 (HGA TOKO), HARGA_PARTAI_1 (HRG PARTAI), HARGA_CABANG_1 (HRG CABANG), SATUAN_1, SATUAN_2, STOK_MIN, STOK_MAX, TOKO, GUDANG</strong>.<br>
             Baris yang sudah ada (kode sama) akan di-update otomatis:
             <strong>harga jual yang berubah di file langsung menggantikan harga lama</strong> (nilai 0/kosong di file tidak menghapus harga yang ada),
             <strong>Tanpa kolom HPP</strong>: kalau file punya kolom HPP, kolom itu diabaikan. HPP barang hanya terbentuk dari <strong>Pembelian</strong> — barang yang belum pernah dibeli HPP-nya 0 di Laba Rugi, Neraca & laporan lain.</span>
@@ -1003,22 +1003,33 @@ window.previewImportBarang = async function(e) {
         }
         window._importItems = rows;
         const valid = rows.filter(r => r.kode && r.nama);
+        const nPpnYa    = valid.filter(r => r.ppn === 'Kena PPN').length;
+        const nPpnTidak = valid.filter(r => r.ppn === 'Non-PPN').length;
+        const nPpnKosong = valid.length - nPpnYa - nPpnTidak;
+        const kodeCount = {}; valid.forEach(r => { kodeCount[r.kode] = (kodeCount[r.kode] || 0) + 1; });
+        const nKembar = Object.values(kodeCount).filter(n => n > 1).length;
+        const nTanpaKode = rows.length - valid.length;
         const jumlahMinusToko   = valid.filter(r => r.stok_toko_minus).length;
         const jumlahMinusGudang = valid.filter(r => r.stok_gudang_minus).length;
         prev.innerHTML = `
         <div class="note note-b"><span>✅ Ditemukan <strong>${rows.length}</strong> baris, <strong>${valid.length}</strong> valid (ada kode & nama).</span></div>
+        <div class="note note-g" style="margin-top:6px;"><span>🧾 PPN dari file: <strong>${nPpnYa}</strong> Kena PPN · <strong>${nPpnTidak}</strong> Non-PPN · <strong>${nPpnKosong}</strong> kosong
+            (kosong → barang lama tetap, barang baru Kena PPN, kecuali kategori ROKOK = Non-PPN).</span></div>
+        ${nTanpaKode ? `<div class="note note-y" style="margin-top:6px;"><span>⚠️ ${nTanpaKode} baris tanpa kode/barcode dilewati.</span></div>` : ''}
+        ${nKembar ? `<div class="note note-y" style="margin-top:6px;"><span>⚠️ ${nKembar} kode muncul lebih dari sekali di file — baris terakhir yang berlaku.</span></div>` : ''}
         ${(jumlahMinusToko || jumlahMinusGudang) ? `<div class="note note-y" style="margin-top:6px;"><span>⚠️ ${jumlahMinusToko} baris stok TOKO minus & ${jumlahMinusGudang} baris stok GUDANG minus terdeteksi — akan otomatis dianggap 0 saat import (bukan diimport apa adanya).</span></div>` : ''}
         <div class="tscroll" style="max-height:220px;overflow-y:auto;margin-top:8px;">
-        <table><thead><tr><th>Kode</th><th>Nama</th><th>Kategori</th><th>HGA TOKO</th><th>Stok Toko</th><th>Stok Gudang</th></tr></thead>
+        <table><thead><tr><th>Kode</th><th>Nama</th><th>Kategori</th><th>PPN</th><th>HGA TOKO</th><th>Stok Toko</th><th>Stok Gudang</th></tr></thead>
         <tbody>${valid.slice(0,20).map(r => `<tr>
             <td style="font-size:11px;font-family:var(--F-m);">${esc(r.kode)}</td>
             <td style="font-size:12px;">${esc(r.nama)}</td>
             <td style="font-size:11px;">${esc(r.kategori||'')}</td>
+            <td style="font-size:11px;">${r.ppn === 'Kena PPN' ? '✅ Kena PPN' : (r.ppn === 'Non-PPN' ? '🚫 Non-PPN' : '<span style="color:var(--ink3);">– (otomatis)</span>')}</td>
             <td class="r" style="font-size:11px;">${r.harga_jual ? R(r.harga_jual) : '–'}</td>
             <td class="r" style="font-size:11px;">${r.stok_toko === null ? '–' : r.stok_toko}${r.stok_toko_minus ? ' <span style="color:var(--red);">(asal minus)</span>' : ''}</td>
             <td class="r" style="font-size:11px;">${r.stok_gudang === null ? '–' : r.stok_gudang}${r.stok_gudang_minus ? ' <span style="color:var(--red);">(asal minus)</span>' : ''}</td>
         </tr>`).join('')}
-        ${valid.length > 20 ? `<tr><td colspan="6" style="text-align:center;color:var(--ink3);font-size:12px;">… dan ${valid.length-20} baris lainnya</td></tr>` : ''}
+        ${valid.length > 20 ? `<tr><td colspan="7" style="text-align:center;color:var(--ink3);font-size:12px;">… dan ${valid.length-20} baris lainnya</td></tr>` : ''}
         </tbody></table></div>`;
         document.getElementById('btnDoImport').disabled = valid.length === 0;
     } catch(err) {
@@ -1066,6 +1077,7 @@ const BARANG_HEADER_ALIAS = {
     kategori    : ['kategori'],
     sub_kategori: ['subkategori'],
     supplier    : ['supplier'],
+    ppn         : ['ppn', 'statusppn', 'kenappn'],
     satuan1     : ['satuan1'],
     satuan2     : ['satuan2'],
     satuan3     : ['satuan3'],
@@ -1088,7 +1100,7 @@ function mapAoaBarang(aoa) {
     let headerIdx = -1, col = {};
     for (let r = 0; r < aoa.length; r++) {
         const cells = (aoa[r] || []).map(norm);
-        const iKode = cells.findIndex(c => BARANG_HEADER_ALIAS.kode.includes(c));
+        const iKode = cells.findIndex(c => BARANG_HEADER_ALIAS.kode.includes(c) || BARANG_HEADER_ALIAS.barcode.includes(c));
         const iNama = cells.findIndex(c => BARANG_HEADER_ALIAS.nama.includes(c));
         if (iKode >= 0 && iNama >= 0) {
             headerIdx = r;
@@ -1099,7 +1111,7 @@ function mapAoaBarang(aoa) {
         }
     }
     if (headerIdx === -1) {
-        throw new Error('Baris header tidak ditemukan: pastikan file punya kolom "KODE_BARANG" & "NAMA" (nama kolom bebas urutannya).');
+        throw new Error('Baris header tidak ditemukan: pastikan file punya kolom "KODE_BARANG" (atau "KODE_BARCODE") & "NAMA" (nama kolom bebas urutannya).');
     }
 
     const get = (row, field, def = '') => {
@@ -1110,10 +1122,14 @@ function mapAoaBarang(aoa) {
     const rows = [];
     for (let r = headerIdx + 1; r < aoa.length; r++) {
         const row = aoa[r] || [];
-        const kode = String(get(row, 'kode')).trim();
+        const barcodeVal = String(get(row, 'barcode')).trim();
+        // Kalau file tidak punya KODE_BARANG (mis. ekspor "barang pusat" yang hanya
+        // punya KODE_BARCODE), barcode dipakai sebagai kode barang.
+        const kode = String(get(row, 'kode')).trim() || barcodeVal;
         const nama = String(get(row, 'nama')).trim();
         if (!kode && !nama) continue; // baris kosong
         rows.push(mapExcelRow({
+            PPN              : get(row, 'ppn'),
             KODE_BARANG      : kode,
             NAMA             : nama,
             KODE_BARCODE     : get(row, 'barcode'),
@@ -1162,6 +1178,13 @@ async function parseCsvFile(file) {
     });
 }
 
+function parsePpnExcel(raw) {
+    const v = String(raw ?? '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (['ya', 'y', 'yes', 'kenappn', 'ppn', '1', 'true'].includes(v)) return 'Kena PPN';
+    if (['tidak', 'tdk', 't', 'no', 'n', 'nonppn', 'tanpappn', 'nonppn', '0', 'false'].includes(v)) return 'Non-PPN';
+    return null;
+}
+
 function mapExcelRow(r) {
     // Support header dari sistem kasir Toko Sumini maupun header generik
     const kode  = String(r['KODE_BARANG'] || r['kode'] || r['Kode'] || '').trim();
@@ -1194,7 +1217,10 @@ function mapExcelRow(r) {
         kategori    : String(r['KATEGORI']        || r['kategori']  || '').trim() || null,
         sub_kategori: String(r['SUB_KATEGORI']    || r['sub_kategori'] || '').trim() || null,
         supplier    : String(r['SUPPLIER']        || r['supplier']  || '').trim() || null,
-        ppn         : 'Kena PPN', // default; bisa dikustomisasi
+        // PPN dari kolom Excel: YA/KENA PPN/Y/1 → Kena PPN; TIDAK/NON PPN/T/0 → Non-PPN.
+        // Kosong/tidak dikenali → null: backend yang menentukan (barang lama = tidak diubah,
+        // barang baru = default; kategori ROKOK = Non-PPN).
+        ppn         : parsePpnExcel(r['PPN'] ?? r['ppn']),
         satuan1     : String(r['SATUAN_1'] || r['satuan1'] || 'PCS').trim() || 'PCS',
         satuan2     : String(r['SATUAN_2'] || r['satuan2'] || '').trim() || null,
         satuan3     : String(r['SATUAN_3'] || r['satuan3'] || '').trim() || null,
