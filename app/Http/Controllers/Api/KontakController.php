@@ -124,11 +124,14 @@ class KontakController extends Controller
                 ->selectRaw('supplier, SUM(qty*harga - COALESCE(diskon,0)) as total')
                 ->groupBy('supplier')->pluck('total', 'supplier');
 
+            // Pelunasan per nota (menu Hutang Pembelian) mengurangi hutang supplier terkait.
+            $bayarPerSupplier = HutangController::dibayarPerSupplier();
+
             $beliPerSupplier = $this->ringkasBeliPerSupplier();
 
             foreach ($supplier as $s) {
                 $catatan = $this->saldoCatatan('Supplier', $s->nama);
-                $hutang  = (float) ($hutangBeli[$s->nama] ?? 0) + $catatan['hutang'];
+                $hutang  = max(0, (float) ($hutangBeli[$s->nama] ?? 0) - (float) ($bayarPerSupplier[$s->nama] ?? 0)) + $catatan['hutang'];
                 $piutang = $catatan['piutang'];
                 $beli    = $beliPerSupplier[$s->nama] ?? null;
                 $result[] = [
@@ -146,7 +149,7 @@ class KontakController extends Controller
             foreach ($beliPerSupplier->keys() as $nama) {
                 if (in_array(mb_strtolower(trim($nama)), $namaTerdaftar)) continue;
                 $catatan = $this->saldoCatatan('Supplier', $nama);
-                $hutang  = (float) ($hutangBeli[$nama] ?? 0) + $catatan['hutang'];
+                $hutang  = max(0, (float) ($hutangBeli[$nama] ?? 0) - (float) ($bayarPerSupplier[$nama] ?? 0)) + $catatan['hutang'];
                 $piutang = $catatan['piutang'];
                 $beli    = $beliPerSupplier[$nama];
                 $result[] = [
@@ -167,6 +170,7 @@ class KontakController extends Controller
                 ->selectRaw("COUNT(DISTINCT COALESCE(no_nota, CONCAT('#', id))) as jml_nota, SUM(qty*harga - COALESCE(diskon,0)) as total, MAX(tgl) as terakhir")
                 ->first();
             $hutangUmum = (float) ($qUmum()->where('bayar', 'Kredit')->selectRaw('SUM(qty*harga - COALESCE(diskon,0)) as total')->value('total') ?? 0);
+            $hutangUmum = max(0, $hutangUmum - (float) ($bayarPerSupplier[''] ?? 0));
             $this->gabungUmum($result, 'Supplier', $statUmum, $hutangUmum);
         }
 
@@ -485,6 +489,15 @@ class KontakController extends Controller
                         'cabang'   => $g['cabang'],
                         'operator' => $g['operator'],
                     ],
+                ];
+            }
+            // Pelunasan per nota (menu Hutang Pembelian) tampil sebagai "Bayar Hutang".
+            foreach (HutangController::pembayaranSupplier($nama, $umum) as $b) {
+                $riwayat[] = [
+                    'tgl' => $b->tgl, 'sumber' => 'Pelunasan Hutang', 'jenis' => 'Bayar Hutang',
+                    'nominal' => (float) $b->nominal,
+                    'keterangan' => $b->no_bayar . ' · nota ' . $b->no_nota . ' · kas ' . $b->kode_kas . ($b->keterangan ? ' — ' . $b->keterangan : ''),
+                    'arah' => 'bayar_hutang',
                 ];
             }
             $jmlNota = count($grup);

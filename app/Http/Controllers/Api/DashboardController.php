@@ -512,6 +512,7 @@ class DashboardController extends Controller
         // Mutasi Barang antar cabang & Jurnal Manual/Memorial
         $this->tambahJurnalMutasi($lines, $hppSvc, $cabang, $dari, $sampai);
         $this->tambahJurnalManual($lines, $cabang, $dari, $sampai);
+        $this->tambahJurnalBayarHutang($lines, $cabang, $dari, $sampai);
 
         usort($lines, fn($a, $b) => strcmp($a['tgl'] . $a['ref'], $b['tgl'] . $b['ref']));
         return $lines;
@@ -609,6 +610,23 @@ class DashboardController extends Controller
     }
 
     /** Jurnal Manual (JU-) & Jurnal Memorial (JM-) dari tabel jurnal_manual. */
+    /** Pelunasan Hutang Pembelian per nota: Dr 2101 Hutang Usaha / Cr Kas-Bank (tabel bayar_hutang). */
+    private function tambahJurnalBayarHutang(array &$lines, ?string $cabang, ?string $dari, ?string $sampai): void
+    {
+        if (!\Illuminate\Support\Facades\Schema::hasTable('bayar_hutang')) return; // belum migrate
+
+        $q = DB::table('bayar_hutang');
+        if ($cabang) $q->where('cabang', $cabang);
+        if ($dari)   $q->where('tgl', '>=', $dari);
+        if ($sampai) $q->where('tgl', '<=', $sampai);
+        foreach ($q->get() as $b) {
+            $ket = 'Bayar Hutang Pembelian ' . $b->no_nota . ($b->keterangan ? ' – ' . $b->keterangan : '') . ' (' . $b->cabang . ')';
+            $nom = (float) $b->nominal;
+            $lines[] = $this->jl($b->tgl, $b->cabang, $b->no_bayar, $ket, '2101', $nom, 0);
+            $lines[] = $this->jl($b->tgl, $b->cabang, $b->no_bayar, $ket, $b->kode_kas ?: '1101', 0, $nom);
+        }
+    }
+
     private function tambahJurnalManual(array &$lines, ?string $cabang, ?string $dari, ?string $sampai): void
     {
         if (!\Illuminate\Support\Facades\Schema::hasTable('jurnal_manual')) return; // belum migrate

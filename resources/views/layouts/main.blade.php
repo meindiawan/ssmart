@@ -74,6 +74,9 @@
         {{-- ══ TAB: KONTAK ═════════════════════════════════════════════ --}}
         @include('modules.kontak')
 
+        {{-- ══ TAB: HUTANG PEMBELIAN ═══════════════════════════════════ --}}
+        @include('modules.hutang')
+
         {{-- ══ TAB: POIN MEMBER ════════════════════════════════════════ --}}
         @include('modules.poin')
 
@@ -128,6 +131,7 @@ window.APP_CONFIG = {
 <script src="{{ asset('js/modules/mutasi.js') }}?v={{ filemtime(public_path('js/modules/mutasi.js')) }}"></script>        {{-- Mutasi Barang: paket multi-barang, kirim→konfirmasi, cetak struk/faktur --}}
 <script src="{{ asset('js/modules/pos.js') }}?v={{ filemtime(public_path('js/modules/pos.js')) }}"></script>          {{-- Kasir POS: jual/beli multi-barang, diskon, poin, struk --}}
 <script src="{{ asset('js/modules/kontak.js') }}?v={{ filemtime(public_path('js/modules/kontak.js')) }}"></script>       {{-- Buku alamat: karyawan/pelanggan/supplier + riwayat hutang piutang --}}
+<script src="{{ asset('js/modules/hutang.js') }}?v={{ filemtime(public_path('js/modules/hutang.js')) }}"></script>       {{-- Hutang Pembelian: bayar/lunasi per nota --}}
 <script src="{{ asset('js/modules/poin.js') }}?v={{ filemtime(public_path('js/modules/poin.js')) }}"></script>         {{-- Rekap Poin Member lama per cabang + katalog hadiah + tukar poin --}}
 <script src="{{ asset('js/modules/aset.js') }}?v={{ filemtime(public_path('js/modules/aset.js')) }}"></script>         {{-- Aset Tetap: CRUD + penyusutan garis lurus otomatis --}}
 <script src="{{ asset('js/modules/jurnal.js') }}?v={{ filemtime(public_path('js/modules/jurnal.js')) }}"></script>        {{-- Jurnal umum & buku besar --}}

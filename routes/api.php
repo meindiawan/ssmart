@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\KaryawanController;
 use App\Http\Controllers\Api\StokController;
 use App\Http\Controllers\Api\SupplierController;
 use App\Http\Controllers\Api\KontakController;
+use App\Http\Controllers\Api\HutangController;
 use App\Http\Controllers\Api\PosController;
 use App\Http\Controllers\Api\MutasiKirimController;
 use App\Http\Controllers\Api\AsetController;
@@ -88,6 +89,7 @@ Route::prefix('master')->group(function () {
     Route::put('/barang/{id}',      [MasterController::class, 'updateBarang']);
     Route::delete('/barang/{id}',   [MasterController::class, 'destroyBarang']);
     Route::post('/barang/import',   [MasterController::class, 'importBarang']);
+    Route::post('/barang/ppn',      [MasterController::class, 'setPpnBarang']);
     Route::post('/barang/isi-modal-otomatis', [MasterController::class, 'isiModalOtomatis']);
     // Import AMAN khusus Satuan 2/3 & Isi (dari file "Isi Satuan Massal") — tidak
     // pernah menimpa Harga Modal/Harga Jual/Harga Grosir/Harga Cabang, beda dengan
@@ -142,6 +144,15 @@ Route::prefix('supplier')->group(function () {
     Route::post('/import',    [SupplierController::class, 'import']);
     Route::put('/{id}',       [SupplierController::class, 'update']);
     Route::delete('/{id}',    [SupplierController::class, 'destroy']);
+});
+
+// ── HUTANG PEMBELIAN (pelunasan per nota) ───────────────────────────────────
+Route::prefix('hutang')->group(function () {
+    Route::get('/',              [HutangController::class, 'index']);
+    Route::get('/detail',        [HutangController::class, 'detail']);
+    Route::post('/bayar',        [HutangController::class, 'bayar']);
+    Route::post('/bayar-banyak', [HutangController::class, 'bayarBanyak']);
+    Route::delete('/bayar/{id}', [HutangController::class, 'hapusBayar']);
 });
 
 // ── KONTAK ───────────────────────────────────────────────────────────────────

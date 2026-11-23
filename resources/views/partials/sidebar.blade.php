@@ -53,6 +53,9 @@
     <button class="nb" data-tab="kontak">
       <span class="ni">📇</span> Kontak
     </button>
+    <button class="nb" data-tab="hutang">
+      <span class="ni">🧾</span> Hutang Pembelian
+    </button>
     <button class="nb" data-tab="poin">
       <span class="ni">🎁</span> Poin Member
     </button>

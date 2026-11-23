@@ -402,8 +402,19 @@ async function renderBarang(page = 1) {
             </div>
             <div class="box-bd pad0 tscroll">
                 ${list.length ? `
+                <div id="brPpnBar" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:8px 14px;border-bottom:1px solid var(--brd2);font-size:12px;">
+                    <strong>🧾 Ubah PPN:</strong>
+                    <span>Dicentang (<b id="brJmlPilih">0</b>)</span>
+                    <button class="btn btn-g btn-sm" onclick="setPpnDipilih('Kena PPN')">✅ Kena PPN</button>
+                    <button class="btn btn-g btn-sm" onclick="setPpnDipilih('Non-PPN')">🚫 Non-PPN</button>
+                    <span style="margin-left:10px;">Semua hasil${search ? ' pencarian' : ''}${cabang ? ' cabang ' + esc(cabang) : ''} (<b>${Number(meta.total || list.length).toLocaleString('id-ID')}</b>)</span>
+                    <button class="btn btn-g btn-sm" onclick="setPpnSemuaHasil('Kena PPN', ${Number(meta.total || list.length)})">✅ Kena PPN</button>
+                    <button class="btn btn-g btn-sm" onclick="setPpnSemuaHasil('Non-PPN', ${Number(meta.total || list.length)})">🚫 Non-PPN</button>
+                    <span style="color:var(--ink3);">· atau klik langsung badge PPN pada baris barang</span>
+                </div>
                 <table id="tblBarang">
                     <thead><tr>
+                        <th style="width:28px;"><input type="checkbox" id="brChkAll" onclick="event.stopPropagation();brPilihSemua(this.checked)" title="Pilih semua di halaman ini"></th>
                         <th>Kode</th><th>Barcode</th><th>Nama Barang</th><th>Kategori</th>
                         <th>PPN</th><th>Satuan</th><th class="r">HRG BELI</th><th class="r">HGA TOKO</th>
                         <th class="r">HRG PARTAI</th><th class="r">HRG CABANG</th>
@@ -415,13 +426,14 @@ async function renderBarang(page = 1) {
                         const unitRows = buildUnitRows(b);
                         return unitRows.map((u, idx) => `
                         <tr class="row-click ${idx === 0 ? 'grp-first' : 'grp-rest'}" onclick="lihatKartuHpp('${esc(b.kode)}')" ondblclick="editBarang(${b.id})" title="Klik untuk lihat Kartu HPP (riwayat masuk/keluar & rata-rata harga) · Klik 2x untuk edit">
+                        <td onclick="event.stopPropagation()">${idx === 0 ? `<input type="checkbox" class="brChk" value="${b.id}" onclick="event.stopPropagation();brHitungPilih()">` : ''}</td>
                         <td style="font-family:var(--F-m);font-size:11px;${idx > 0 ? 'color:var(--ink3);' : ''}">${esc(b.kode)}</td>
                         <td style="font-family:var(--F-m);font-size:11px;">${esc(u.barcode || '–')}</td>
                         <td${idx > 0 ? ' style="color:var(--ink3);"' : ''}>${esc(b.nama)}</td>
                         <td><span style="font-size:11px;color:var(--ink3);">${esc(b.kategori || '–')}</span></td>
-                        <td><span class="badge ${b.ppn === 'Kena PPN' ? 'badge-ppn' : 'badge-noppn'}">
-                            <span class="dot"></span>${b.ppn}
-                        </span></td>
+                        <td>${idx === 0 ? `<span class="badge ppn-toggle ${b.ppn === 'Kena PPN' ? 'badge-ppn' : 'badge-noppn'}" data-id="${b.id}" data-ppn="${b.ppn}" style="cursor:pointer;" title="Klik untuk ubah ke ${b.ppn === 'Kena PPN' ? 'Non-PPN' : 'Kena PPN'}" onclick="event.stopPropagation();togglePpnBarang(${b.id}, this)">
+                            <span class="dot"></span>${b.ppn} ⇄
+                        </span>` : ''}</td>
                         <td style="font-size:11px;font-weight:700;">${esc(u.satuan)}</td>
                         <td class="r" title="HPP rata-rata berjalan (Kartu HPP) — klik baris untuk lihat riwayatnya">${u.modal ? R(u.modal) : '–'}</td>
                         <td class="r">${u.hargaJual ? R(u.hargaJual) + (u.hargaAuto ? ' *' : '') : '–'}</td>
@@ -491,6 +503,59 @@ async function renderBarang(page = 1) {
     }
 }
 window.renderBarang = renderBarang;
+
+/* ── UBAH PPN LANGSUNG (klik badge / centang / semua hasil) ───── */
+const _brPpnKelas = ppn => ppn === 'Kena PPN' ? 'badge-ppn' : 'badge-noppn';
+
+window.togglePpnBarang = async (id, el) => {
+    const baru = el.dataset.ppn === 'Kena PPN' ? 'Non-PPN' : 'Kena PPN';
+    try {
+        await apiPost('/master/barang/ppn', { ids: [id], ppn: baru });
+        el.dataset.ppn = baru;
+        el.className = `badge ppn-toggle ${_brPpnKelas(baru)}`;
+        el.title = `Klik untuk ubah ke ${baru === 'Kena PPN' ? 'Non-PPN' : 'Kena PPN'}`;
+        el.innerHTML = `<span class="dot"></span>${baru} ⇄`;
+        const b = (STATE.barang || []).find(x => x.id === id); if (b) b.ppn = baru;
+        toast(`PPN → ${baru}`);
+    } catch (err) { toast('Gagal ubah PPN: ' + err.message, 'err'); }
+};
+
+window.brHitungPilih = () => {
+    const n = document.querySelectorAll('.brChk:checked').length;
+    const el = document.getElementById('brJmlPilih'); if (el) el.textContent = n;
+    return n;
+};
+window.brPilihSemua = on => {
+    document.querySelectorAll('.brChk').forEach(c => { c.checked = on; });
+    brHitungPilih();
+};
+
+window.setPpnDipilih = async ppn => {
+    const ids = [...document.querySelectorAll('.brChk:checked')].map(c => parseInt(c.value));
+    if (!ids.length) { toast('Centang dulu barang yang mau diubah', 'err'); return; }
+    try {
+        const res = await apiPost('/master/barang/ppn', { ids, ppn });
+        toast(res.message || 'PPN diperbarui');
+        await loadMasterData();
+        await renderBarang(window._barangPage || 1);
+    } catch (err) { toast('Gagal ubah PPN: ' + err.message, 'err'); }
+};
+
+window.setPpnSemuaHasil = async (ppn, total) => {
+    const ok = await confirmDialog(
+        `Ubah ${Number(total).toLocaleString('id-ID')} barang ${window._barangSearch ? `hasil pencarian "${window._barangSearch}"` : 'SEMUA barang'}` +
+        `${window._barangCabang ? ' (cabang ' + window._barangCabang + ')' : ''} menjadi ${ppn}?\n\nHanya status PPN yang berubah — stok, HPP, dan harga tidak tersentuh.`,
+        { title: 'Ubah PPN massal', okText: 'Ya, ubah ' + ppn, danger: false });
+    if (!ok) return;
+    try {
+        const res = await apiPost('/master/barang/ppn', {
+            semua: true, ppn, search: window._barangSearch || '', cabang: window._barangCabang || '',
+        });
+        toast(res.message || 'PPN diperbarui');
+        await loadMasterData();
+        await renderBarang(window._barangPage || 1);
+    } catch (err) { toast('Gagal ubah PPN: ' + err.message, 'err'); }
+};
 
 /* Export SEMUA barang (bukan hanya halaman yang sedang tampil). Mengikuti filter
    pencarian & cabang yang aktif. Kolom sama dengan format Import Excel, jadi file

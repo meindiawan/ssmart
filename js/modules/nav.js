@@ -13,6 +13,7 @@ const TAB_META = {
     transaksi  : { title: 'Transaksi',           desc: 'Input penjualan, pembelian, kasbon, dan pengeluaran' },
     stok       : { title: 'Stok',                desc: 'Saldo stok, barang masuk/keluar, opname, dan kartu stok per tanggal' },
     kontak     : { title: 'Kontak',              desc: 'Buku alamat karyawan, pelanggan & supplier — riwayat hutang piutang' },
+    hutang     : { title: 'Hutang Pembelian',   desc: 'Nota pembelian Kredit — status lunas/belum, bayar per nota atau lunasi banyak nota sekaligus' },
     poin       : { title: 'Poin Member',         desc: 'Rekap poin member lama per cabang — cari, gabungkan nama sama, tukar hadiah' },
     aset       : { title: 'Aset Tetap',          desc: 'Kendaraan, peralatan & perabotan toko — penyusutan garis lurus otomatis ke Jurnal' },
     jurnal     : { title: 'Jurnal & Buku Besar', desc: 'Jurnal otomatis dari semua transaksi + jurnal manual & memorial' },
@@ -303,6 +304,7 @@ async function renderTabContent(tab) {
         case 'transaksi': await renderSubTabContent('tx', activeSubTab.tx);   break;
         case 'stok':      await renderSubTabContent('stok', activeSubTab.stok); break;
         case 'kontak':    await renderKontak();                                break;
+        case 'hutang':    await renderHutang();                                break;
         case 'poin':      await renderPoin();                                  break;
         case 'aset':      await renderAset();                                  break;
         case 'jurnal':    await renderSubTabContent('jr', activeSubTab.jr);   break;

@@ -101,11 +101,13 @@ async function muatRiwayatKontak(tipe, nama) {
             <div><div class="meta">Rata-rata / Nota</div><div style="font-family:var(--F-m);font-size:20px;font-weight:600;">${R(rb.rata_nota || 0)}</div></div>
             <div><div class="meta">Terakhir Beli</div><div style="font-family:var(--F-m);font-size:20px;font-weight:600;">${rb.terakhir_beli ? fmtTgl(rb.terakhir_beli) : '–'}</div></div>
         </div>` : '';
+        const tombolHutang = tipe === 'Supplier' ? `<div style="margin-bottom:12px;"><button class="btn btn-p btn-sm" onclick="bukaHutangSupplier('${esc(nama).replace(/'/g, "\\'")}')">💳 Bayar hutang per nota — ${esc(nama)}</button></div>` : '';
         const arahLabel = { piutang: ['Piutang (mereka berhutang)', 'laba-pos'], bayar_piutang: ['Bayar Piutang', 'laba-pos'], hutang: ['Hutang (kita berhutang)', 'laba-neg'], bayar_hutang: ['Bayar Hutang', 'laba-neg'], catatan: ['Catatan', ''], beli: ['Pembelian', ''] };
 
         body.innerHTML = `
         <div class="note note-b" style="margin-bottom:10px;"><span>ℹ️</span><span>Tipe: <strong>${esc(tipe)}</strong> · Riwayat otomatis dari transaksi ditambah catatan manual, terbaru di atas. Klik baris <strong>Pembelian</strong> (Supplier) atau <strong>Penjualan</strong> (Pelanggan) untuk lihat faktur/nota, toko & barangnya.</span></div>
         ${ringkasBeliHtml}
+        ${tombolHutang}
         ${res.riwayat_dibatasi ? `<div class="note note-y" style="margin-bottom:10px;"><span>ℹ️</span><span>Kontak Umum menampung banyak transaksi: ditampilkan <strong>300 terbaru</strong> dari ${res.riwayat_dibatasi}. Ringkasan di atas tetap menghitung semuanya.</span></div>` : ''}
 
         <form id="fKontakCatatan" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:14px;padding:10px;background:var(--bg2,#f7f7f9);border-radius:8px;">

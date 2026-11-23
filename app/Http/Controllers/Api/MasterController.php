@@ -470,6 +470,53 @@ class MasterController extends Controller
         ]);
     }
 
+    /**
+     * Ubah status PPN barang langsung dari Master Barang.
+     *  - ids[]            : barang yang dicentang / diklik, ATAU
+     *  - semua=true       : SEMUA barang hasil pencarian/cabang yang sedang tampil (search, cabang).
+     * ppn = 'Kena PPN' | 'Non-PPN'. Hanya kolom barang.ppn yang berubah (stok/HPP/harga tidak).
+     */
+    public function setPpnBarang(Request $request)
+    {
+        $v = $request->validate([
+            'ppn'    => ['required', Rule::in(['Kena PPN', 'Non-PPN'])],
+            'ids'    => 'nullable|array',
+            'ids.*'  => 'integer',
+            'semua'  => 'nullable|boolean',
+            'search' => 'nullable|string',
+            'cabang' => 'nullable|string',
+        ]);
+        $q = DB::table('barang');
+        if (!empty($v['semua'])) {
+            if (!empty($v['search'])) {
+                $s = $v['search'];
+                $q->where(function ($q) use ($s) {
+                    $q->where('barang.kode', 'like', "%$s%")
+                      ->orWhere('barang.barcode', 'like', "%$s%")
+                      ->orWhere('barang.barcode2', 'like', "%$s%")
+                      ->orWhere('barang.barcode3', 'like', "%$s%")
+                      ->orWhere('barang.nama', 'like', "%$s%");
+                });
+            }
+            if (!empty($v['cabang'])) BarangCabangService::filterCabang($q, $v['cabang']);
+            $ids = (clone $q)->select('barang.id')->pluck('id')->all();
+        } else {
+            $ids = $v['ids'] ?? [];
+        }
+        if (!$ids) return response()->json(['updated' => 0, 'message' => 'Tidak ada barang yang dipilih']);
+
+        $n = 0;
+        foreach (array_chunk($ids, 1000) as $chunk) {
+            $n += DB::table('barang')->whereIn('id', $chunk)->where('ppn', '!=', $v['ppn'])
+                ->update(['ppn' => $v['ppn'], 'updated_at' => now()]);
+        }
+        return response()->json([
+            'updated' => $n,
+            'total'   => count($ids),
+            'message' => "{$n} barang diubah menjadi {$v['ppn']}" . (count($ids) - $n > 0 ? ' (' . (count($ids) - $n) . ' sudah berstatus sama)' : ''),
+        ]);
+    }
+
     /** 'YA'/'Kena PPN'/… → 'Kena PPN'; 'TIDAK'/'Non-PPN'/… → 'Non-PPN'; selain itu null. */
     private function normalisasiPpn($raw): ?string
     {
