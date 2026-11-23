@@ -175,7 +175,7 @@ window.downloadTemplateImport = downloadTemplateImport;
 function downloadTemplateImportBarang() {
     const contoh = [{
         'KODE_BARANG': 'BRG001', 'KODE_BARCODE': '8991234567890', 'KODE_BARCODE_2': '', 'KODE_BARCODE_3': '',
-        'NAMA': 'Contoh Nama Barang', 'KATEGORI': 'Makanan', 'SUB_KATEGORI': '', 'SUPPLIER': '',
+        'NAMA': 'Contoh Nama Barang', 'KATEGORI': 'Makanan', 'SUB_KATEGORI': '', 'SUPPLIER': '', 'PPN': 'YA',
         'SATUAN_1': 'PCS', 'SATUAN_2': 'KARTON', 'SATUAN_3': '', 'ISI': 12, 'ISI_3': '',
         'HARGA_TOKO_1': 10000, 'HARGA_PARTAI_1': 9000, 'HARGA_CABANG_1': 9500,
         'STOK_MIN': 5, 'STOK_MAX': 100, 'TOKO': 0, 'GUDANG': 0,
@@ -185,7 +185,7 @@ function downloadTemplateImportBarang() {
     ws['!cols'] = Object.keys(contoh[0]).map(h => ({ wch: Math.max(h.length, 14) }));
     XLSX.utils.book_append_sheet(wb, ws, 'Template Barang');
     XLSX.writeFile(wb, 'template-import-barang.xlsx');
-    toast('Template diunduh — tanpa kolom HPP (HPP otomatis dari Pembelian, 0 kalau belum ada pembelian). SATUAN_2/ISI opsional.');
+    toast('Template diunduh — kolom PPN: isi YA (Kena PPN) / TIDAK (Non-PPN). Tanpa kolom HPP (HPP otomatis dari Pembelian, 0 kalau belum ada pembelian). SATUAN_2/ISI opsional.');
 }
 window.downloadTemplateImportBarang = downloadTemplateImportBarang;
 
